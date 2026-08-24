@@ -605,3 +605,101 @@ category = "low_lexical_diversity_ttr"
 expect = "silent"
 genre = "essay"
 note = "意図的反復を持つ人間の論説(TTR約0.411)。現行閾値0.45では発火する既知の不一致"
+
+[[sample]]
+id = "abstract-metaphor-fire-001"
+path = "labeled/abstract_metaphor/fire-001.md"
+category = "abstract_metaphor"
+expect = "fire"
+note = "抽象的な方針を実装判断の羅針盤に見立てる"
+
+[[sample]]
+id = "abstract-metaphor-fire-002"
+path = "labeled/abstract_metaphor/fire-002.md"
+category = "abstract_metaphor"
+expect = "fire"
+note = "抽象的な計画を開発の地図に見立てる"
+
+[[sample]]
+id = "abstract-metaphor-fire-003"
+path = "labeled/abstract_metaphor/fire-003.md"
+category = "abstract_metaphor"
+expect = "fire"
+note = "文書を議論の道標に見立てる"
+
+[[sample]]
+id = "abstract-metaphor-fire-004"
+path = "labeled/abstract_metaphor/fire-004.md"
+category = "abstract_metaphor"
+expect = "fire"
+note = "設計を運用の土台に見立てる"
+
+[[sample]]
+id = "abstract-metaphor-fire-005"
+path = "labeled/abstract_metaphor/fire-005.md"
+category = "abstract_metaphor"
+expect = "fire"
+note = "活動を組織変革の架け橋に見立てる"
+
+[[sample]]
+id = "abstract-metaphor-silent-001"
+path = "labeled/abstract_metaphor/silent-001.md"
+category = "abstract_metaphor"
+expect = "silent"
+note = "画面へ地理情報を表示する本来の用例"
+
+[[sample]]
+id = "abstract-metaphor-silent-002"
+path = "labeled/abstract_metaphor/silent-002.md"
+category = "abstract_metaphor"
+expect = "silent"
+note = "船具を点検する本来の用例"
+
+[[sample]]
+id = "abstract-metaphor-silent-003"
+path = "labeled/abstract_metaphor/silent-003.md"
+category = "abstract_metaphor"
+expect = "silent"
+note = "登山道の設備を交換する本来の用例"
+
+[[sample]]
+id = "abstract-metaphor-silent-004"
+path = "labeled/abstract_metaphor/silent-004.md"
+category = "abstract_metaphor"
+expect = "silent"
+note = "建物の基礎部分を補強する本来の用例"
+
+[[sample]]
+id = "abstract-metaphor-silent-005"
+path = "labeled/abstract_metaphor/silent-005.md"
+category = "abstract_metaphor"
+expect = "silent"
+note = "実在する橋を補修する本来の用例"
+
+[[sample]]
+id = "abstract-metaphor-silent-006"
+path = "labeled/abstract_metaphor/silent-006.md"
+category = "abstract_metaphor"
+expect = "silent"
+note = "紙媒体を示す述語での本来の用例"
+
+[[sample]]
+id = "abstract-metaphor-silent-007"
+path = "labeled/abstract_metaphor/silent-007.md"
+category = "abstract_metaphor"
+expect = "silent"
+note = "船具の用途を示す述語での本来の用例"
+
+[[sample]]
+id = "abstract-metaphor-silent-008"
+path = "labeled/abstract_metaphor/silent-008.md"
+category = "abstract_metaphor"
+expect = "silent"
+note = "登山道の設備を示す述語での本来の用例"
+
+[[sample]]
+id = "abstract-metaphor-silent-009"
+path = "labeled/abstract_metaphor/silent-009.md"
+category = "abstract_metaphor"
+expect = "silent"
+note = "建材の用途を示す述語での本来の用例"

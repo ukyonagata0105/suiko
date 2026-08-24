@@ -13,6 +13,7 @@ fn skill_bundle_references_resolve() {
         "agents/openai.yaml",
         "references/manual-checklist.md",
         "assets/style-profile-template.md",
+        "scripts/run-textlint-ai-writing.sh",
     ] {
         assert!(root.join(required).is_file(), "missing {required}");
     }

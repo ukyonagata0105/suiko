@@ -54,10 +54,10 @@ Rustを入れずに使う場合は、[GitHub Releases](https://github.com/nwiizo
 
 ```sh
 # 例: macOS (Apple Silicon)
-curl -LO https://github.com/nwiizo/suiko/releases/download/v0.3.1/suiko-v0.3.1-aarch64-apple-darwin.tar.gz
-shasum -a 256 -c suiko-v0.3.1-aarch64-apple-darwin.tar.gz.sha256   # 事前に.sha256も取得した場合
-tar xzf suiko-v0.3.1-aarch64-apple-darwin.tar.gz
-./suiko-v0.3.1-aarch64-apple-darwin/suiko --version
+curl -LO https://github.com/nwiizo/suiko/releases/download/v0.3.3/suiko-v0.3.3-aarch64-apple-darwin.tar.gz
+shasum -a 256 -c suiko-v0.3.3-aarch64-apple-darwin.tar.gz.sha256   # 事前に.sha256も取得した場合
+tar xzf suiko-v0.3.3-aarch64-apple-darwin.tar.gz
+./suiko-v0.3.3-aarch64-apple-darwin/suiko --version
 ```
 
 macOSでは、ダウンロードしたバイナリに検疫属性（quarantine）が付くため初回実行がGatekeeperに止められます。`xattr -d com.apple.quarantine <suikoのパス>` で解除するか、確認ダイアログを避けたい場合は `cargo install suiko` で自分のマシンでビルドしてください（署名の出所が自分になるため、以降の確認が出ません）。
@@ -125,6 +125,8 @@ printf '重要なのは、結論です。\n' | suiko lint - --json
 `lint --json` の `stats.readability` には平均文長、動詞・助詞比率、文字種比率の観測値が入ります。読者別の難易度スコアは、正解ラベル付きコーパスで校正できるまで実装しません（観測値のみを提供します）。
 
 `stats.rhythm.sentence_endings` には、文末を `assertive`（明示的な断定）、`tentative`（推量・保留）、`question`（疑問）、`nominal`（体言止め）、`other` に近似分類した件数と、空行をまたがない最長連続数が入ります。これは文章の良否を決める値ではなく、局所的なリズムを確認するための観測値です。6文以上の文書で `--experimental` を指定すると、30モーラ以上で同じ明示的文末が3文以上続き、文長の変動係数が0.15以下の箇所を `repeated_sentence_mode`、25モーラ以下の体言止めが3文以上続く箇所を `consecutive_nominal_endings` として指さします。
+
+`abstract_metaphor` は、地図、羅針盤、道標、土台、架け橋などの名詞が、抽象的な対象の役割を表す述語や「〜の〜」型で使われた箇所を `info` で指さします。候補語の出現だけでは発火せず、地理情報の表示や船具の点検など本来の意味での用例は対象外です。比喩かどうかを断定せず、判断対象、判断基準、具体的な効果を明記できるか確認するためのfindingです。CIで必ず止める場合は `--fail-on info` を使い、必要な用例は `.suiko.toml` の `allow` へ理由付きで記録します。
 
 `--baseline` には前回の `lint --json` 出力（単一オブジェクトまたは配列）をそのまま渡せます。レコードは `file` 文字列の完全一致で対応づけ、改名は推測しません。baselineにないファイルは全findingを新規として `baseline.file_status = "added"` で示し、baselineにあって今回対象にないファイルはstderrへ警告します。genre、`--experimental`、Suikoバージョンが一致しない場合は実行エラーになります。`antithesis_repetition` や `low_burstiness` のような文書単位のfindingは、文章の言い換えで抜粋が変わっても同一カテゴリとして継続扱いします。
 
@@ -194,6 +196,10 @@ gh skill install nwiizo/suiko suiko --agent claude-code
 ```
 
 導入後は`suiko --version`でCLIを確認し、Skill対応エージェントでは`$suiko`を指定します。Skillを先に導入した環境でCLIがない場合、Skillは`cargo install suiko`でCLIの導入を試み、`cargo`がない環境では導入手順の案内と同梱の手動チェックリストによる診断へ切り替えます。
+
+SkillはNode.js 20.18以降とnpmが使える場合、[@textlint-ja/textlint-rule-preset-ai-writing](https://github.com/textlint-ja/textlint-rule-preset-ai-writing)も別の検査として実行します。同梱スクリプトが固定版をnpmの一時環境で実行するため、対象プロジェクトの依存関係やtextlint設定は変更しません。自動修正は行わず、取得できない環境ではSuikoだけで続行します。
+
+両者には定型表現、誇張表現、箇条書き、コロン接続、冗長表現の一部で重なりがあります。textlintはMarkdown AST上の表層・構造パターン、SuikoはSudachiの形態素列、文書内統計、baseline比較を担当します。同じ箇所への指摘は一つの修正として判断し、textlintの件数をSuikoの自然度スコアやbaselineへ加算しません。`abstract_metaphor`は、preset 1.7.0に専用パターンがない領域を補います。
 
 ## 対象範囲
 

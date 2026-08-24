@@ -43,6 +43,7 @@ const EXPERIMENTAL_CATEGORIES: &[&str] = &[
 ];
 
 const RULE_CATEGORIES: &[&str] = &[
+    "abstract_metaphor",
     "antithesis_repetition",
     "boilerplate_heading",
     "bullet_bold_label",
@@ -305,6 +306,7 @@ pub fn analyze_with_thresholds(
     findings.extend(patterns::english_syntax_findings(&masked, raw, &split));
     findings.extend(morph::translationese_morph_findings(&tokenized, &raw_lines));
     findings.extend(morph::inanimate_morph_findings(&tokenized, &raw_lines));
+    findings.extend(morph::abstract_metaphor_findings(&tokenized, &raw_lines));
     findings.extend(morph::redundant_light_verb_findings(&tokenized, &raw_lines));
     findings.extend(rhythm_findings);
     findings.extend(ngram_findings);

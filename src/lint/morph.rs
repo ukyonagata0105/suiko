@@ -23,6 +23,37 @@ const TRANSITIVE_SMELL_VERBS: &[&str] = &[
     "後押しする",
 ];
 
+const ABSTRACT_METAPHOR_NOUNS: &[&str] = &[
+    "地図",
+    "羅針盤",
+    "\u{5951}\u{7d04}",
+    "道標",
+    "土台",
+    "架け橋",
+];
+
+const ABSTRACT_CONTEXT_NOUNS: &[&str] = &[
+    "実装",
+    "判断",
+    "設計",
+    "仕様",
+    "方針",
+    "計画",
+    "戦略",
+    "議論",
+    "思考",
+    "理解",
+    "運用",
+    "開発",
+    "組織",
+    "事業",
+    "変革",
+    "成長",
+    "課題",
+    "解決",
+    "意思決定",
+];
+
 #[derive(Clone, Debug)]
 pub(super) struct TokenizedSentence {
     pub(super) line: usize,
@@ -280,6 +311,95 @@ pub(super) fn redundant_light_verb_findings(
         }
     }
     findings
+}
+
+/// 抽象的な対象を物体になぞらえ、判断内容を曖昧にする可能性がある名詞句。
+/// 候補語だけでは本来の意味での用例まで拾うため、述語として使われる場合か、
+/// 抽象名詞から「の」で修飾される場合に限定する。
+pub(super) fn abstract_metaphor_findings(
+    tokenized: &[TokenizedSentence],
+    raw_lines: &[&str],
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for sentence in tokenized {
+        for (index, token) in sentence.tokens.iter().enumerate() {
+            if token.pos(0) != "名詞" || !ABSTRACT_METAPHOR_NOUNS.contains(&token.dictionary_form())
+            {
+                continue;
+            }
+
+            let abstract_genitive = index >= 2
+                && sentence.tokens[index - 1].surface == "の"
+                && sentence.tokens[index - 2].pos(0) == "名詞"
+                && is_abstract_context_noun(&sentence.tokens[index - 2]);
+            let predicate_end = metaphor_predicate_end(&sentence.tokens, index);
+            if !abstract_genitive
+                && (predicate_end.is_none()
+                    || !has_abstract_context_before(&sentence.tokens, index))
+            {
+                continue;
+            }
+
+            let byte_start = if index >= 2 && sentence.tokens[index - 1].surface == "の" {
+                sentence.tokens[index - 2].byte_start
+            } else {
+                token.byte_start
+            };
+            let byte_end = predicate_end
+                .map(|end| sentence.tokens[end].byte_end)
+                .unwrap_or(token.byte_end);
+            let mut finding = Finding::new(
+                sentence.line,
+                "abstract_metaphor",
+                sentence.excerpt(byte_start, byte_end),
+                "info",
+                format!(
+                    "抽象比喩の可能性: 「{}」。判断対象・判断基準・具体的な効果を明記してください",
+                    token.surface
+                ),
+            );
+            finding.span = sentence.span(raw_lines, byte_start, byte_end);
+            findings.push(finding);
+        }
+    }
+    findings
+}
+
+fn is_abstract_context_noun(token: &Morpheme) -> bool {
+    ABSTRACT_CONTEXT_NOUNS.iter().any(|candidate| {
+        token.dictionary_form() == *candidate || token.surface.ends_with(candidate)
+    })
+}
+
+fn has_abstract_context_before(tokens: &[Morpheme], noun_index: usize) -> bool {
+    tokens[..noun_index]
+        .iter()
+        .rev()
+        .take_while(|token| !matches!(token.pos(0), "記号" | "補助記号"))
+        .take(12)
+        .any(|token| token.pos(0) == "名詞" && is_abstract_context_noun(token))
+}
+
+fn metaphor_predicate_end(tokens: &[Morpheme], noun_index: usize) -> Option<usize> {
+    let first = tokens.get(noun_index + 1)?;
+    if matches!(first.dictionary_form(), "だ" | "です") {
+        return Some(noun_index + 1);
+    }
+
+    let second = tokens.get(noun_index + 2)?;
+    if matches!(first.surface.as_str(), "に" | "と") && second.dictionary_form() == "なる" {
+        return Some(noun_index + 2);
+    }
+    if first.surface == "で" && second.dictionary_form() == "ある" {
+        return Some(noun_index + 2);
+    }
+    if first.surface == "と" && second.dictionary_form() == "する" {
+        let third = tokens.get(noun_index + 3)?;
+        if third.surface == "て" {
+            return Some(noun_index + 3);
+        }
+    }
+    None
 }
 
 /// 「を+行う」の活用形ごとに機械的に安全な置換だけを提案する。

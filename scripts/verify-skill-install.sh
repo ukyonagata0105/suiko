@@ -17,7 +17,8 @@ npx -y skills add "${REPO_URL}" --skill suiko
 echo "==> 内容物の検証"
 status=0
 for file in SKILL.md agents/openai.yaml references/manual-checklist.md \
-    references/diagnose.md assets/style-profile-template.md; do
+    references/diagnose.md assets/style-profile-template.md \
+    scripts/run-textlint-ai-writing.sh; do
     found="$(find . -path "*skills/suiko/${file}" | head -1)"
     if [ -n "${found}" ]; then
         echo "OK ${file}"

@@ -313,6 +313,99 @@ fn experimental_sentence_runs_do_not_cross_blank_lines() {
     );
 }
 
+#[test]
+fn abstract_metaphor_morph_distinguishes_figurative_and_literal_contexts() {
+    let body = concat!(
+        "この方針は実装判断の羅針盤になる。\n",
+        "この計画は開発の地図です。\n",
+        "このAPI仕様はクライアントとサーバーの\u{5951}\u{7d04}として機能する。\n",
+        "画面に地図を表示する。\n",
+        "船の羅針盤を点検する。\n",
+        "顧客との\u{5951}\u{7d04}を更新する。\n",
+        "これは地図です。\n",
+        "この船具は羅針盤です。\n",
+        "この書面は\u{5951}\u{7d04}です。\n",
+    );
+    let (_dir, path) = draft(body);
+
+    let output = cargo_bin_cmd!("suiko")
+        .args(["lint", path.to_str().expect("UTF-8 path"), "--json"])
+        .output()
+        .expect("run suiko lint");
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("valid JSON output");
+    let findings = json["findings"]
+        .as_array()
+        .expect("findings array")
+        .iter()
+        .filter(|finding| finding["category"] == "abstract_metaphor")
+        .collect::<Vec<_>>();
+
+    assert_eq!(findings.len(), 3);
+    assert_eq!(
+        findings
+            .iter()
+            .map(|finding| finding["line"].as_u64().expect("line"))
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    assert!(findings.iter().all(|finding| finding["severity"] == "info"));
+    assert!(findings.iter().all(|finding| {
+        finding["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("判断対象"))
+    }));
+}
+
+#[test]
+fn abstract_metaphor_can_gate_ci_and_be_allowed_with_a_reason() {
+    let (dir, path) =
+        draft("このAPI仕様はクライアントとサーバーの\u{5951}\u{7d04}として機能する。\n");
+
+    cargo_bin_cmd!("suiko")
+        .args([
+            "lint",
+            path.to_str().expect("UTF-8 path"),
+            "--fail-on",
+            "info",
+        ])
+        .assert()
+        .code(2);
+
+    fs::write(
+        dir.path().join(".suiko.toml"),
+        concat!(
+            "version = 1\n",
+            "[[allow]]\n",
+            "category = \"abstract_metaphor\"\n",
+            "text = \"\u{5951}\u{7d04}\"\n",
+            "reason = \"API仕様上の用語として維持する\"\n",
+        ),
+    )
+    .expect("write config");
+
+    let output = cargo_bin_cmd!("suiko")
+        .current_dir(dir.path())
+        .args([
+            "lint",
+            path.to_str().expect("UTF-8 path"),
+            "--fail-on",
+            "info",
+            "--json",
+        ])
+        .output()
+        .expect("run suiko lint with allowance");
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("valid JSON output");
+    assert!(
+        json["findings"]
+            .as_array()
+            .expect("findings array")
+            .iter()
+            .all(|finding| finding["category"] != "abstract_metaphor")
+    );
+}
+
 // FAQのQ./A.のような短いマーカー+区切りの反復は、定型フィールドとして
 // 散文の無意識な文頭反復と区別する。
 #[test]

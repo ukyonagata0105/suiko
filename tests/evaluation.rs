@@ -74,7 +74,7 @@ fn labeled_reports_detection_and_fpr_per_category() {
         .args(["labeled", "eval/corpus.toml"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("samples: total=61 categories=17"))
+        .stdout(predicate::str::contains("samples: total=75 categories=18"))
         .stdout(predicate::str::contains("ci=wilson95 low_n<5"))
         .stdout(predicate::str::contains("corpus: sha256="))
         .stdout(predicate::str::contains(
@@ -82,6 +82,9 @@ fn labeled_reports_detection_and_fpr_per_category() {
         ))
         .stdout(predicate::str::contains(
             "category=low_lexical_diversity_ttr\tfire=1/1 detection=1.000 ci95=0.207-1.000 low_n\tsilent_fired=1/2 fpr=0.500 ci95=0.095-0.905 low_n",
+        ))
+        .stdout(predicate::str::contains(
+            "category=abstract_metaphor\tfire=5/5 detection=1.000 ci95=0.566-1.000\tsilent_fired=0/9 fpr=0.000 ci95=0.000-0.299",
         ))
         .stdout(predicate::str::contains("mismatches: 1"))
         .stdout(predicate::str::contains("mismatch id=low-ttr-silent-002"));

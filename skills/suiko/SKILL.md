@@ -77,6 +77,14 @@ suiko terms <file> --json
 
 `lint` はカレントディレクトリの `.suiko.toml` を自動検出する。プロジェクトに設定がある場合は、既定ジャンル、severity gate、無効化ルール、理由付きの個別許可をその方針として扱う。CLIの `--genre` と `--fail-on` は設定より優先される。設定を切り分ける必要があるときだけ `--no-config`、別の設定を使うときは `--config <path>` を指定する。設定の新規作成や許可項目の追加は、ユーザーがプロジェクト方針の変更を求めた場合に限る。
 
+Node.js 20.18以降とnpmが使える場合は、Suikoと同じ対象へtextlintのAI文章presetも実行する。プロジェクトのtextlint設定が同じpresetを有効にしている場合は、ロックされた依存関係と既存の許可設定を尊重して、そのプロジェクトの検査コマンドを一度だけ使う。設定されていない場合は、Skillディレクトリを基準に次の同梱スクリプトを使う。
+
+```sh
+sh <skill-directory>/scripts/run-textlint-ai-writing.sh <file>
+```
+
+この検査は固定したtextlintとpresetをnpmの一時環境で実行し、プロジェクトの依存関係や設定を変更しない。`--fix`は使わない。終了コード1でもJSONに`messages`があれば検出結果として扱う。Node/npmがない、ネットワークから取得できない、対象形式を処理できないなどJSONを取得できない場合は、理由を一言示してSuikoの検査だけを続ける。textlintの結果は別の検査結果として扱い、Suikoの自然度スコア、baseline、finding件数には加えない。
+
 ## 4. finding を判断する
 
 finding は疑いであって命令ではない。該当行と周辺文脈を読み、各 finding を次のどちらかへ分類する。
@@ -87,6 +95,7 @@ finding は疑いであって命令ではない。該当行と周辺文脈を読
 カテゴリ別の判断に迷った場合だけ、必要な参照を読む。
 
 - 禁止語・LLM常套句: [forbidden-patterns.md](references/forbidden-patterns.md)
+- 抽象比喩: [revision-guide.md](references/revision-guide.md)
 - 翻訳調・英語統語: [translationese.md](references/translationese.md)
 - 修正方針と判断台帳: [revision-guide.md](references/revision-guide.md)
 - 読みやすさの原則: [readability-principles.md](references/readability-principles.md)
@@ -98,7 +107,7 @@ finding は疑いであって命令ではない。該当行と周辺文脈を読
 
 ## 既存の校正工程との境界
 
-既存の校正設定や用語辞書はプロジェクト規約として尊重し、Suikoで置き換えない。Suikoは自然さ、構造、読解負荷を受け持ち、一般的な表記規則や製品名の正規化は既存の工程へ残す。結果が衝突した場合も件数だけで決めず、対象プロジェクトの規約、事実、意図した文体を先に確認し、同じ修正を二重に適用しない。
+既存の校正設定や用語辞書はプロジェクト規約として尊重し、Suikoで置き換えない。Suikoは形態素列、文書内の反復、構造、読解負荷を受け持つ。textlintのAI文章presetはMarkdown AST上の定型表現、強調、箇条書き、コロン接続を補う。両方が同じ箇所を指した場合は、判断台帳では一つの修正として扱い、同じ修正を二重に適用しない。一般的な表記規則や製品名の正規化は既存の工程へ残す。
 
 ## 5. ベースラインで収束させる
 
