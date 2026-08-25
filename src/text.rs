@@ -19,22 +19,23 @@ pub fn numbered_lines(text: &str) -> Vec<(usize, &str)> {
         .collect()
 }
 
-pub fn is_heading(line: &str) -> bool {
+fn heading_prefix(line: &str) -> Option<(&str, usize)> {
     let trimmed = line.trim_start();
-    let hashes = trimmed.bytes().take_while(|byte| *byte == b'#').count();
-    (1..=6).contains(&hashes)
+    let level = trimmed.bytes().take_while(|byte| *byte == b'#').count();
+    let valid_prefix = (1..=6).contains(&level)
         && trimmed
             .as_bytes()
-            .get(hashes)
-            .is_none_or(u8::is_ascii_whitespace)
+            .get(level)
+            .is_none_or(u8::is_ascii_whitespace);
+    valid_prefix.then_some((trimmed, level))
+}
+
+pub fn is_heading(line: &str) -> bool {
+    heading_prefix(line).is_some()
 }
 
 pub fn heading(line: &str) -> Option<(usize, String)> {
-    if !is_heading(line) {
-        return None;
-    }
-    let trimmed = line.trim_start();
-    let level = trimmed.bytes().take_while(|byte| *byte == b'#').count();
+    let (trimmed, level) = heading_prefix(line)?;
     Some((
         level,
         trimmed[level..]

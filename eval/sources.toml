@@ -1,7 +1,8 @@
 version = 1
 
 # 人間コーパスの取得元manifest。著作権のある本文はコミットせず、
-# scripts/fetch-corpus.py が type=web の各URLをローカルの
+# `cargo run --features evaluation --bin suiko-eval -- fetch eval/sources.toml` が
+# type=web の各URLをローカルの
 # eval/corpus/external/ へ取得する(結果のSHA-256はexternal-lock.jsonに記録)。
 # type=aozora はパブリックドメインのため eval/corpus/aozora/ にコミット済み。
 #

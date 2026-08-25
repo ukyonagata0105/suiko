@@ -17,6 +17,16 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// sources.tomlのweb文書を取得し、本文とSHA-256 lockを保存する
+    Fetch {
+        sources: PathBuf,
+        /// このidだけを取得する
+        #[arg(long)]
+        id: Option<String>,
+        /// 先頭N件だけを取得する
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// カテゴリ別の文書発火率とfinding件数を表示する
     Report {
         manifest: PathBuf,
@@ -85,6 +95,9 @@ enum Command {
 
 fn execute(cli: Cli) -> Result<String, evaluation::EvaluationError> {
     match cli.command {
+        Command::Fetch { sources, id, limit } => {
+            evaluation::fetch_corpus(&sources, id.as_deref(), limit)
+        }
         Command::Report {
             manifest,
             experimental,

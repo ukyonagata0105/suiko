@@ -177,47 +177,57 @@ pub(super) fn mora_length(tokens: &[Morpheme]) -> usize {
         .sum()
 }
 
+fn token_positions(
+    tokenized: &[TokenizedSentence],
+) -> impl Iterator<Item = (&TokenizedSentence, usize, &Morpheme)> {
+    tokenized.iter().flat_map(|sentence| {
+        sentence
+            .tokens
+            .iter()
+            .enumerate()
+            .map(move |(index, token)| (sentence, index, token))
+    })
+}
+
 pub(super) fn translationese_morph_findings(
     tokenized: &[TokenizedSentence],
     raw_lines: &[&str],
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
-    for sentence in tokenized {
-        for (index, token) in sentence.tokens.iter().enumerate() {
-            let Some(particle) = sentence.tokens.get(index + 1) else {
-                continue;
-            };
-            let Some(verb) = sentence.tokens.get(index + 2) else {
-                continue;
-            };
-            // 2026-08-18の技術書翻訳21件の正解ラベルに基づき対象を絞る:
-            // 「は」型(ことはできない)は否定の対比として自然、使役型
-            // (させることができる)は縮約すると受身と紛れるため対象外。
-            let causative = index > 0
-                && matches!(
-                    sentence.tokens[index - 1].dictionary_form(),
-                    "せる" | "させる"
-                );
-            if token.surface == "こと"
-                && token.pos(0) == "名詞"
-                && particle.pos(0) == "助詞"
-                && particle.surface == "が"
-                && !causative
-                && verb.pos(0) == "動詞"
-                && verb.surface.starts_with("でき")
-            {
-                let start = sentence.tokens[index.saturating_sub(4)].byte_start;
-                let mut finding = Finding::new(
-                    sentence.line,
-                    "translationese_morph",
-                    sentence.excerpt(start, verb.byte_end),
-                    "info",
-                    "品詞列マッチ: 名詞/動詞+こと+が/は+できる型の翻訳調構文",
-                );
-                finding.span = sentence.span(raw_lines, start, verb.byte_end);
-                finding.suggestion = suru_koto_ga_suggestion(sentence, raw_lines, index, particle);
-                findings.push(finding);
-            }
+    for (sentence, index, token) in token_positions(tokenized) {
+        let Some(particle) = sentence.tokens.get(index + 1) else {
+            continue;
+        };
+        let Some(verb) = sentence.tokens.get(index + 2) else {
+            continue;
+        };
+        // 2026-08-18の技術書翻訳21件の正解ラベルに基づき対象を絞る:
+        // 「は」型(ことはできない)は否定の対比として自然、使役型
+        // (させることができる)は縮約すると受身と紛れるため対象外。
+        let causative = index > 0
+            && matches!(
+                sentence.tokens[index - 1].dictionary_form(),
+                "せる" | "させる"
+            );
+        if token.surface == "こと"
+            && token.pos(0) == "名詞"
+            && particle.pos(0) == "助詞"
+            && particle.surface == "が"
+            && !causative
+            && verb.pos(0) == "動詞"
+            && verb.surface.starts_with("でき")
+        {
+            let start = sentence.tokens[index.saturating_sub(4)].byte_start;
+            let mut finding = Finding::new(
+                sentence.line,
+                "translationese_morph",
+                sentence.excerpt(start, verb.byte_end),
+                "info",
+                "品詞列マッチ: 名詞/動詞+こと+が/は+できる型の翻訳調構文",
+            );
+            finding.span = sentence.span(raw_lines, start, verb.byte_end);
+            finding.suggestion = suru_koto_ga_suggestion(sentence, raw_lines, index, particle);
+            findings.push(finding);
         }
     }
     findings
@@ -267,48 +277,46 @@ pub(super) fn redundant_light_verb_findings(
     raw_lines: &[&str],
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
-    for sentence in tokenized {
-        for (index, noun) in sentence.tokens.iter().enumerate() {
-            let Some(particle) = sentence.tokens.get(index + 1) else {
-                continue;
-            };
-            let Some(verb) = sentence.tokens.get(index + 2) else {
-                continue;
-            };
-            let verbal_noun = noun.pos(0) == "名詞"
-                && (noun.pos(2) == "サ変可能" || noun.pos(2) == "サ変形状詞可能");
-            if !verbal_noun
-                || particle.pos(0) != "助詞"
-                || particle.surface != "を"
-                || verb.pos(0) != "動詞"
-                || !matches!(verb.dictionary_form(), "行う" | "行なう")
-            {
-                continue;
-            }
-            // 受身・使役（行われる、行わせる）は言い換えの意味が変わるため対象外
-            let passive_or_causative = sentence.tokens.get(index + 3).is_some_and(|next| {
-                matches!(
-                    next.dictionary_form(),
-                    "れる" | "られる" | "せる" | "させる"
-                )
-            });
-            if passive_or_causative {
-                continue;
-            }
-            let mut finding = Finding::new(
-                sentence.line,
-                "redundant_light_verb",
-                sentence.excerpt(noun.byte_start, verb.byte_end),
-                "info",
-                format!(
-                    "サ変名詞+を+行う型の冗長候補: 「{}を{}」は「{}する」へ畳める。名詞の動作性を活かす方が簡潔（意図的な文体なら維持する）",
-                    noun.surface, verb.surface, noun.surface
-                ),
-            );
-            finding.span = sentence.span(raw_lines, noun.byte_start, verb.byte_end);
-            finding.suggestion = light_verb_suggestion(sentence, raw_lines, particle, verb);
-            findings.push(finding);
+    for (sentence, index, noun) in token_positions(tokenized) {
+        let Some(particle) = sentence.tokens.get(index + 1) else {
+            continue;
+        };
+        let Some(verb) = sentence.tokens.get(index + 2) else {
+            continue;
+        };
+        let verbal_noun =
+            noun.pos(0) == "名詞" && (noun.pos(2) == "サ変可能" || noun.pos(2) == "サ変形状詞可能");
+        if !verbal_noun
+            || particle.pos(0) != "助詞"
+            || particle.surface != "を"
+            || verb.pos(0) != "動詞"
+            || !matches!(verb.dictionary_form(), "行う" | "行なう")
+        {
+            continue;
         }
+        // 受身・使役（行われる、行わせる）は言い換えの意味が変わるため対象外
+        let passive_or_causative = sentence.tokens.get(index + 3).is_some_and(|next| {
+            matches!(
+                next.dictionary_form(),
+                "れる" | "られる" | "せる" | "させる"
+            )
+        });
+        if passive_or_causative {
+            continue;
+        }
+        let mut finding = Finding::new(
+            sentence.line,
+            "redundant_light_verb",
+            sentence.excerpt(noun.byte_start, verb.byte_end),
+            "info",
+            format!(
+                "サ変名詞+を+行う型の冗長候補: 「{}を{}」は「{}する」へ畳める。名詞の動作性を活かす方が簡潔（意図的な文体なら維持する）",
+                noun.surface, verb.surface, noun.surface
+            ),
+        );
+        finding.span = sentence.span(raw_lines, noun.byte_start, verb.byte_end);
+        finding.suggestion = light_verb_suggestion(sentence, raw_lines, particle, verb);
+        findings.push(finding);
     }
     findings
 }
@@ -321,46 +329,42 @@ pub(super) fn abstract_metaphor_findings(
     raw_lines: &[&str],
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
-    for sentence in tokenized {
-        for (index, token) in sentence.tokens.iter().enumerate() {
-            if token.pos(0) != "名詞" || !ABSTRACT_METAPHOR_NOUNS.contains(&token.dictionary_form())
-            {
-                continue;
-            }
-
-            let abstract_genitive = index >= 2
-                && sentence.tokens[index - 1].surface == "の"
-                && sentence.tokens[index - 2].pos(0) == "名詞"
-                && is_abstract_context_noun(&sentence.tokens[index - 2]);
-            let predicate_end = metaphor_predicate_end(&sentence.tokens, index);
-            if !abstract_genitive
-                && (predicate_end.is_none()
-                    || !has_abstract_context_before(&sentence.tokens, index))
-            {
-                continue;
-            }
-
-            let byte_start = if index >= 2 && sentence.tokens[index - 1].surface == "の" {
-                sentence.tokens[index - 2].byte_start
-            } else {
-                token.byte_start
-            };
-            let byte_end = predicate_end
-                .map(|end| sentence.tokens[end].byte_end)
-                .unwrap_or(token.byte_end);
-            let mut finding = Finding::new(
-                sentence.line,
-                "abstract_metaphor",
-                sentence.excerpt(byte_start, byte_end),
-                "info",
-                format!(
-                    "抽象比喩の可能性: 「{}」。判断対象・判断基準・具体的な効果を明記してください",
-                    token.surface
-                ),
-            );
-            finding.span = sentence.span(raw_lines, byte_start, byte_end);
-            findings.push(finding);
+    for (sentence, index, token) in token_positions(tokenized) {
+        if token.pos(0) != "名詞" || !ABSTRACT_METAPHOR_NOUNS.contains(&token.dictionary_form()) {
+            continue;
         }
+
+        let abstract_genitive = index >= 2
+            && sentence.tokens[index - 1].surface == "の"
+            && sentence.tokens[index - 2].pos(0) == "名詞"
+            && is_abstract_context_noun(&sentence.tokens[index - 2]);
+        let predicate_end = metaphor_predicate_end(&sentence.tokens, index);
+        if !abstract_genitive
+            && (predicate_end.is_none() || !has_abstract_context_before(&sentence.tokens, index))
+        {
+            continue;
+        }
+
+        let byte_start = if index >= 2 && sentence.tokens[index - 1].surface == "の" {
+            sentence.tokens[index - 2].byte_start
+        } else {
+            token.byte_start
+        };
+        let byte_end = predicate_end
+            .map(|end| sentence.tokens[end].byte_end)
+            .unwrap_or(token.byte_end);
+        let mut finding = Finding::new(
+            sentence.line,
+            "abstract_metaphor",
+            sentence.excerpt(byte_start, byte_end),
+            "info",
+            format!(
+                "抽象比喩の可能性: 「{}」。判断対象・判断基準・具体的な効果を明記してください",
+                token.surface
+            ),
+        );
+        finding.span = sentence.span(raw_lines, byte_start, byte_end);
+        findings.push(finding);
     }
     findings
 }

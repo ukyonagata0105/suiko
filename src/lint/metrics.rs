@@ -91,24 +91,24 @@ impl SentenceMode {
         Self::Other,
     ];
 
-    fn as_str(self) -> &'static str {
+    fn names(self) -> (&'static str, &'static str) {
         match self {
-            Self::Assertive => "assertive",
-            Self::Tentative => "tentative",
-            Self::Question => "question",
-            Self::Nominal => "nominal",
-            Self::Other => "other",
+            Self::Assertive => ("assertive", "断定"),
+            Self::Tentative => ("tentative", "推量・保留"),
+            Self::Question => ("question", "疑問"),
+            Self::Nominal => ("nominal", "体言止め"),
+            Self::Other => ("other", "その他"),
         }
     }
 
+    fn as_str(self) -> &'static str {
+        let (id, _) = self.names();
+        id
+    }
+
     fn label(self) -> &'static str {
-        match self {
-            Self::Assertive => "断定",
-            Self::Tentative => "推量・保留",
-            Self::Question => "疑問",
-            Self::Nominal => "体言止め",
-            Self::Other => "その他",
-        }
+        let (_, label) = self.names();
+        label
     }
 }
 

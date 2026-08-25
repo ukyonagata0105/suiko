@@ -2,14 +2,12 @@
 //! document(出典・SHA-256付きの文書)とsample(正解ラベル付きfixture)を扱う。
 
 use std::collections::BTreeSet;
-use std::fmt::Write as _;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 use super::EvaluationError;
+use super::support::{digest, parse_toml, read, read_json, read_toml, utf8};
 use crate::lint;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -117,13 +115,6 @@ pub(super) struct Corpus {
     pub(super) samples: Vec<Sample>,
 }
 
-fn read(path: &Path) -> Result<Vec<u8>, EvaluationError> {
-    fs::read(path).map_err(|source| EvaluationError::Read {
-        path: path.display().to_string(),
-        source,
-    })
-}
-
 fn require_text(field: &str, value: &str, id: &str) -> Result<(), EvaluationError> {
     if value.trim().is_empty() {
         return Err(EvaluationError::Invalid(format!(
@@ -133,24 +124,11 @@ fn require_text(field: &str, value: &str, id: &str) -> Result<(), EvaluationErro
     Ok(())
 }
 
-fn digest(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(64);
-    for byte in Sha256::digest(bytes) {
-        write!(&mut output, "{byte:02x}").expect("write to String");
-    }
-    output
-}
-
 pub(super) fn load_corpus(manifest_path: &Path) -> Result<Corpus, EvaluationError> {
     let manifest_bytes = read(manifest_path)?;
     let manifest_sha256 = digest(&manifest_bytes);
-    let source = String::from_utf8(manifest_bytes)
-        .map_err(|_| EvaluationError::Utf8(manifest_path.display().to_string()))?;
-    let manifest =
-        toml::from_str::<CorpusManifest>(&source).map_err(|error| EvaluationError::Parse {
-            path: manifest_path.display().to_string(),
-            message: error.to_string(),
-        })?;
+    let source = utf8(manifest_path, manifest_bytes)?;
+    let manifest = parse_toml::<CorpusManifest>(manifest_path, &source)?;
     if manifest.version != 1 {
         return Err(EvaluationError::Invalid(format!(
             "version = {} は未対応です。version = 1 を指定してください",
@@ -191,8 +169,7 @@ pub(super) fn load_corpus(manifest_path: &Path) -> Result<Corpus, EvaluationErro
                 spec.id, spec.sha256
             )));
         }
-        let text = String::from_utf8(bytes)
-            .map_err(|_| EvaluationError::Utf8(path.display().to_string()))?;
+        let text = utf8(&path, bytes)?;
         documents.push(Document {
             id: spec.id,
             label: spec.label,
@@ -221,8 +198,7 @@ pub(super) fn load_corpus(manifest_path: &Path) -> Result<Corpus, EvaluationErro
         }
         let path = base.join(&spec.path);
         let bytes = read(&path)?;
-        let text = String::from_utf8(bytes)
-            .map_err(|_| EvaluationError::Utf8(path.display().to_string()))?;
+        let text = utf8(&path, bytes)?;
         samples.push(Sample {
             id: spec.id,
             path: spec.path.display().to_string(),
@@ -241,23 +217,38 @@ pub(super) fn load_corpus(manifest_path: &Path) -> Result<Corpus, EvaluationErro
     })
 }
 
-/// sources.toml のうち外部取得(type=web)エントリの読み込みに必要な項目。
-/// 出典系の追加フィールドは取得スクリプト用のメタデータなのでここでは無視する。
+/// sources.tomlの共通入力。取得処理と外部評価文書の読み込みで同じ型を使う。
 #[derive(Debug, Deserialize)]
-struct SourceSpec {
-    id: String,
+pub(super) struct SourceSpec {
+    pub(super) id: String,
     #[serde(rename = "type")]
-    kind: String,
-    genre: Genre,
+    pub(super) kind: String,
+    pub(super) url: String,
     #[serde(default)]
-    split: Split,
+    pub(super) title: String,
+    #[serde(default)]
+    pub(super) author: String,
+    pub(super) genre: Genre,
+    #[serde(default)]
+    pub(super) split: Split,
 }
 
 #[derive(Debug, Deserialize)]
-struct SourcesManifest {
+pub(super) struct SourcesManifest {
     version: u32,
     #[serde(default)]
-    source: Vec<SourceSpec>,
+    pub(super) source: Vec<SourceSpec>,
+}
+
+pub(super) fn load_sources(path: &Path) -> Result<SourcesManifest, EvaluationError> {
+    let sources = read_toml::<SourcesManifest>(path)?;
+    if sources.version != 1 {
+        return Err(EvaluationError::Invalid(format!(
+            "sources.toml の version = {} は未対応です",
+            sources.version
+        )));
+    }
+    Ok(sources)
 }
 
 #[derive(Debug, Deserialize)]
@@ -291,28 +282,8 @@ pub(super) fn load_external_documents(
     let sources_path = base.join("sources.toml");
     let lock_path = base.join("corpus/external-lock.json");
 
-    let sources_text = String::from_utf8(read(&sources_path)?)
-        .map_err(|_| EvaluationError::Utf8(sources_path.display().to_string()))?;
-    let sources = toml::from_str::<SourcesManifest>(&sources_text).map_err(|error| {
-        EvaluationError::Parse {
-            path: sources_path.display().to_string(),
-            message: error.to_string(),
-        }
-    })?;
-    if sources.version != 1 {
-        return Err(EvaluationError::Invalid(format!(
-            "sources.toml の version = {} は未対応です",
-            sources.version
-        )));
-    }
-    let lock_text = String::from_utf8(read(&lock_path)?)
-        .map_err(|_| EvaluationError::Utf8(lock_path.display().to_string()))?;
-    let lock = serde_json::from_str::<ExternalLock>(&lock_text).map_err(|error| {
-        EvaluationError::Parse {
-            path: lock_path.display().to_string(),
-            message: error.to_string(),
-        }
-    })?;
+    let sources = load_sources(&sources_path)?;
+    let lock = read_json::<ExternalLock>(&lock_path)?;
 
     let mut documents = Vec::new();
     let mut stats = ExternalStats::default();
@@ -333,12 +304,11 @@ pub(super) fn load_external_documents(
         let actual = digest(&bytes);
         if !actual.eq_ignore_ascii_case(expected) {
             return Err(EvaluationError::Invalid(format!(
-                "外部文書 {} のSHA-256がexternal-lock.jsonと一致しません: expected={expected}, actual={actual}。scripts/fetch-corpus.py --id {} で再取得してください",
+                "外部文書 {} のSHA-256がexternal-lock.jsonと一致しません: expected={expected}, actual={actual}。cargo run --features evaluation --bin suiko-eval -- fetch eval/sources.toml --id {} で再取得してください",
                 spec.id, spec.id
             )));
         }
-        let text = String::from_utf8(bytes)
-            .map_err(|_| EvaluationError::Utf8(path.display().to_string()))?;
+        let text = utf8(&path, bytes)?;
         match spec.split {
             Split::Dev => stats.used_dev += 1,
             Split::Holdout => stats.used_holdout += 1,

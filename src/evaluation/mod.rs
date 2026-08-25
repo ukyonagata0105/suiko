@@ -2,7 +2,9 @@
 //! ここでは文書単位の校正プロキシ(report/sweep/length-analysis)と
 //! 正解ラベル付きサンプル評価(labeled)を実装する。
 
+mod fetch;
 mod manifest;
+mod support;
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -18,20 +20,28 @@ use manifest::{
     Corpus, Expectation, ExternalStats, Genre, Label, Split, load_corpus, load_external_documents,
 };
 
+pub use fetch::fetch_corpus;
+
 /// これ未満の分母は率を性能値として扱わず、low_nを付けて参考値に落とす。
 const MIN_SAMPLES: usize = 5;
 
 #[derive(Debug, Error)]
 pub enum EvaluationError {
-    #[error("評価manifestを読み込めません: {path} ({source})")]
+    #[error("評価データを読み込めません: {path} ({source})")]
     Read {
         path: String,
         #[source]
         source: std::io::Error,
     },
-    #[error("評価manifestを解析できません: {path} ({message})")]
+    #[error("評価データを書き込めません: {path} ({source})")]
+    Write {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("評価データを解析できません: {path} ({message})")]
     Parse { path: String, message: String },
-    #[error("評価manifestが不正です: {0}")]
+    #[error("評価データが不正です: {0}")]
     Invalid(String),
     #[error("評価文書がUTF-8ではありません: {0}")]
     Utf8(String),

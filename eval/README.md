@@ -61,13 +61,16 @@ genre, and slide PDFs keep almost no prose after masking.
 - **Aozora (public domain)**: committed under `corpus/aozora/` with
   provenance headers, and registered as `[[document]]` entries in
   `corpus.toml`.
-- **Web (copyrighted)**: never committed. `uv run scripts/fetch-corpus.py`
+- **Web (copyrighted)**: never committed. `cargo run --features evaluation
+  --bin suiko-eval -- fetch eval/sources.toml`
   downloads each URL to `eval/corpus/external/` (gitignored) and records the
   SHA-256, char count, and extraction method of every fetched file in
   `external-lock.json` (committed), so measurements can state exactly which
   fetch they were computed on. The 2026-08-18 fetch succeeded for 81/81
   entries. One note.com entry (`note-essay-ciotan-8a0bfe52`) is a paid
   article; only its free portion is fetched.
+  Use `--id <source-id>` for one entry or `--limit <count>` for the first
+  entries when checking the acquisition flow locally.
 - **AI documents**: `scripts/generate-ai-corpus.sh <id> <genre> <prompt-file>
   [model]` generates an uncurated first-pass document via the claude CLI,
   stores the prompt under `eval/prompts/`, and prints the `[[document]]`

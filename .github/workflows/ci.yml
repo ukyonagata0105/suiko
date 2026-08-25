@@ -22,8 +22,6 @@ jobs:
         with:
           path: resources/system.dic
           key: sudachidict-20260723-core-53fa281d11eef376
-      - name: Fetch SudachiDict
-        run: ./scripts/fetch-dictionary.sh
       - name: Check formatting
         run: cargo +1.97 fmt --check
       - name: Run Clippy

@@ -53,7 +53,7 @@ SudachiDict's LEGAL notice states that parts of its lexicon and connection
 matrix derive from UniDic (Copyright (c) 2011-2013, The UniDic Consortium),
 distributed under a BSD-style license. The full notices ship inside the
 dictionary distribution zip (`LEGAL`, `LICENSE-2.0.txt`); the dictionary is
-fetched by `scripts/fetch-dictionary.sh` and verified by `build.rs`.
+fetched and verified by `build.rs`.
 
 ## AI-generated evaluation documents
 
@@ -95,7 +95,7 @@ Source and terms:
 
 `eval/sources.toml` seeds its entries from `corpus/sources.json` of
 [coji/natural-japanese](https://github.com/coji/natural-japanese) at commit
-`0f1cc1c5a4e2aa7590598c88a15c213a60d9545a`, and `scripts/fetch-corpus.py` is
+`0f1cc1c5a4e2aa7590598c88a15c213a60d9545a`, and `src/evaluation/fetch.rs` is
 an adaptation of `corpus/fetch.py` from the same commit (changes: TOML input,
 SHA-256 lock recording, output paths). natural-japanese is MIT-licensed:
 

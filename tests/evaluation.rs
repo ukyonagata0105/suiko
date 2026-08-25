@@ -1,4 +1,7 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::thread;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -6,6 +9,180 @@ use tempfile::tempdir;
 
 fn eval_command() -> Command {
     Command::cargo_bin("suiko-eval").expect("suiko-eval binary")
+}
+
+#[test]
+fn fetch_downloads_html_and_records_a_compatible_lock_entry() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local HTTP server");
+    let address = listener.local_addr().expect("local HTTP address");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept HTTP request");
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).expect("read HTTP request");
+        let body = concat!(
+            "<html><article>",
+            "<h2>概要</h2>",
+            "<p>第一段落です。</p>",
+            "<p>第二段落&amp;詳細。</p>",
+            "</article></html>",
+        );
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .expect("write HTTP response");
+    });
+
+    let dir = tempdir().expect("temporary directory");
+    let eval_dir = dir.path().join("eval");
+    fs::create_dir_all(&eval_dir).expect("create eval directory");
+    let sources_path = eval_dir.join("sources.toml");
+    fs::write(
+        &sources_path,
+        format!(
+            r#"version = 1
+
+[[source]]
+id = "local-html"
+type = "web"
+url = "http://{address}/article"
+title = "テスト記事"
+author = "テスト著者"
+genre = "essay"
+split = "dev"
+"#,
+        ),
+    )
+    .expect("write sources manifest");
+
+    eval_command()
+        .args([
+            "fetch",
+            sources_path.to_str().expect("UTF-8 path"),
+            "--id",
+            "local-html",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "summary: 1 succeeded, 0 failed (total 1)",
+        ));
+    server.join().expect("join local HTTP server");
+
+    let body = "## 概要\n\n第一段落です。\n\n第二段落&詳細。";
+    let expected = format!(
+        "---\nid: local-html\nsource_url: http://{address}/article\ntitle: \"テスト記事\"\nauthor: \"テスト著者\"\ngenre: essay\nextract_method: generic\nchars: 24\n---\n\n{body}\n"
+    );
+    let fetched_path = eval_dir.join("corpus/external/local-html.md");
+    assert_eq!(
+        fs::read_to_string(&fetched_path).expect("read fetched document"),
+        expected
+    );
+
+    let lock: serde_json::Value = serde_json::from_slice(
+        &fs::read(eval_dir.join("corpus/external-lock.json")).expect("read lock file"),
+    )
+    .expect("valid lock JSON");
+    let entry = &lock["entries"]["local-html"];
+    assert_eq!(lock["version"], 1);
+    assert_eq!(entry["url"], format!("http://{address}/article"));
+    assert_eq!(entry["chars"], 24);
+    assert_eq!(entry["extract_method"], "generic");
+    assert!(
+        entry["sha256"]
+            .as_str()
+            .is_some_and(|value| value.len() == 64)
+    );
+    assert!(
+        entry["fetched_at"]
+            .as_str()
+            .is_some_and(|value| value.ends_with('Z') && value.len() == 20)
+    );
+}
+
+#[test]
+fn fetch_preserves_completed_entries_when_a_later_document_cannot_be_written() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local HTTP server");
+    let address = listener.local_addr().expect("local HTTP address");
+    let server = thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().expect("accept HTTP request");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).expect("read HTTP request");
+            let body = "<html><article><p>取得本文です。</p></article></html>";
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write HTTP response");
+        }
+    });
+
+    let dir = tempdir().expect("temporary directory");
+    let eval_dir = dir.path().join("eval");
+    let external_dir = eval_dir.join("corpus/external");
+    fs::create_dir_all(external_dir.join("write-fails.md"))
+        .expect("create directory at second output path");
+    let sources_path = eval_dir.join("sources.toml");
+    fs::write(
+        &sources_path,
+        format!(
+            r#"version = 1
+
+[[source]]
+id = "write-succeeds"
+type = "web"
+url = "http://{address}/first"
+title = "成功"
+author = "著者"
+genre = "essay"
+
+[[source]]
+id = "write-fails"
+type = "web"
+url = "http://{address}/second"
+title = "失敗"
+author = "著者"
+genre = "essay"
+"#,
+        ),
+    )
+    .expect("write sources manifest");
+
+    eval_command()
+        .args(["fetch", sources_path.to_str().expect("UTF-8 path")])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("summary: 1 succeeded, 1 failed (total 2)").count(1));
+    server.join().expect("join local HTTP server");
+
+    let lock: serde_json::Value = serde_json::from_slice(
+        &fs::read(eval_dir.join("corpus/external-lock.json")).expect("read lock file"),
+    )
+    .expect("valid lock JSON");
+    assert!(lock["entries"]["write-succeeds"]["sha256"].is_string());
+    assert!(lock["entries"]["write-fails"]["error"].is_string());
+}
+
+#[test]
+fn fetch_reports_output_directory_creation_as_a_write_error() {
+    let dir = tempdir().expect("temporary directory");
+    let eval_dir = dir.path().join("eval");
+    fs::create_dir_all(&eval_dir).expect("create eval directory");
+    fs::write(eval_dir.join("corpus"), "not a directory").expect("create path blocker");
+    let sources_path = eval_dir.join("sources.toml");
+    fs::write(&sources_path, "version = 1\n").expect("write sources manifest");
+
+    eval_command()
+        .args(["fetch", sources_path.to_str().expect("UTF-8 path")])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("評価データを書き込めません"));
 }
 
 #[test]

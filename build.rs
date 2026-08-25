@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 // 決定的な検出を保つため、埋め込む辞書を1つのSHA-256へ固定する。
-// 辞書を更新する場合は scripts/fetch-dictionary.sh と同時に変更する。
+// 辞書を更新する場合は版、URL、zipと展開後ファイルのSHA-256を同時に変更する。
 const DICT_NAME: &str = "SudachiDict 20260723 core (system_core.dic)";
 const DICT_SHA256: &str = "53fa281d11eef3769712fe1c3c892117338f9892bee6daf4dad51daa5281bb6f";
 const DICT_ZIP_SHA256: &str = "b6e835f63440f97474c2da45d80950f73746e632e40bbfc168b4041729135e1f";
@@ -119,7 +119,7 @@ fn main() {
     if env::var("CARGO_NET_OFFLINE").as_deref() == Ok("true") {
         panic!(
             "{DICT_NAME} が見つかりません。オフラインビルドでは、\
-             `./scripts/fetch-dictionary.sh` で resources/system.dic へ配置するか、\
+             検証済みの辞書を resources/system.dic へ配置するか、\
              環境変数 SUIKO_SUDACHI_DICT で辞書ファイルを指定してください。"
         );
     }

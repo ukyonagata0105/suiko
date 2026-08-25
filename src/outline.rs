@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::Error;
 use crate::morphology::Morphology;
-use crate::text::{heading, is_heading, is_list_item, mask_html_comments};
+use crate::text::{heading, is_list_item, mask_html_comments};
 
 const TEMPLATE_HEADING_WORDS: &[&str] = &[
     "はじめに",
@@ -180,16 +180,14 @@ pub fn build_outline(raw_text: &str) -> Vec<OutlineEntry> {
             flush_block(&mut buffer, &mut output);
             continue;
         }
-        if is_heading(line) {
+        if let Some((level, text)) = heading(line) {
             flush_block(&mut buffer, &mut output);
-            if let Some((level, text)) = heading(line) {
-                output.push(OutlineEntry {
-                    line: line_no,
-                    kind: "heading".to_owned(),
-                    level: Some(level),
-                    text,
-                });
-            }
+            output.push(OutlineEntry {
+                line: line_no,
+                kind: "heading".to_owned(),
+                level: Some(level),
+                text,
+            });
             continue;
         }
 

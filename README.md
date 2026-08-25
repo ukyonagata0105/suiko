@@ -33,7 +33,7 @@ Rust 1.97以降が必要です。形態素解析は [sudachi.rs](https://github.
 cargo install suiko
 ```
 
-ビルド時に一度だけ、SudachiDict 20260723 core のzip（約69MB）を公式配布元からSHA-256固定で取得して埋め込みます。**実行時のダウンロードやファイル参照はありません。** 事前に `./scripts/fetch-dictionary.sh` で `resources/system.dic` へ配置するか、環境変数 `SUIKO_SUDACHI_DICT` で辞書ファイルを指定すれば、ビルド時の取得も行いません（オフラインビルド時は必須）。埋め込む辞書が約207MBあるため、バイナリは200MB台になります。
+ビルド時に一度だけ、SudachiDict 20260723 core のzip（約69MB）を公式配布元からSHA-256固定で取得して埋め込みます。**実行時のダウンロードやファイル参照はありません。** 検証済みの `resources/system.dic` を配置するか、環境変数 `SUIKO_SUDACHI_DICT` で辞書ファイルを指定すれば、ビルド時の取得も行いません（オフラインビルド時は必須）。埋め込む辞書が約207MBあるため、バイナリは200MB台になります。
 
 sudachi.rsはcrates.io未公開のため、Apache-2.0の条件に従った非公式再配布 [suiko-sudachi](https://crates.io/crates/suiko-sudachi)（v0.6.11そのまま、変更点はREADMEに明記）へ依存しています。上流が公式にcrates.ioへ公開した時点でそちらへ乗り換えます。
 
@@ -42,7 +42,6 @@ sudachi.rsはcrates.io未公開のため、Apache-2.0の条件に従った非公
 ```sh
 git clone https://github.com/nwiizo/suiko
 cd suiko
-./scripts/fetch-dictionary.sh   # 任意(なければビルド時に取得)
 cargo install --path .
 ```
 

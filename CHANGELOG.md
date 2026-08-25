@@ -2,6 +2,17 @@
 
 Suikoの公開リリースを記録する。日付はJSTで、各項目は実測とテストに対応づける。
 
+## [Unreleased]
+
+### 変更
+
+- 外部評価文書の取得処理をPythonから`suiko-eval fetch`へ移し、HTML/PDFの抽出、SHA-256の記録、取得日時の保存をRustだけで実行できるようにした。途中の書き込みに失敗しても、完了分と失敗内容をlockへ保存する
+- SudachiDictの取得と検証を`build.rs`へ一本化し、重複していた辞書取得用シェルスクリプトとCIの事前取得手順を削除した
+- sudachi.rsとSudachiDictの更新確認からPythonを除き、`gh`、または`curl`と`jq`で確認するようにした
+- `cargo coupling`と`similarity-rs`で全Rustコードを解析し、見出し解析、出力形式ごとのfinding走査、形態素トークン走査、評価ファイルの読み込み処理にあった重複を整理した
+
+互換性: 通常のlint結果と公開JSONの形は不変。評価用の外部文書取得コマンドは`cargo run --features evaluation --bin suiko-eval -- fetch eval/sources.toml`へ変わる。
+
 ## [0.3.3] - 2026-08-25
 
 ### 追加
@@ -47,7 +58,7 @@ Suikoの公開リリースを記録する。日付はJSTで、各項目は実測
 - 検出器 `redundant_light_verb`: サ変名詞に隣接する「を行う/行なう」を確認候補（info）として指摘し、終止・連用・促音便の3活用に限って安全なsuggestion（「を行う」→「する」等）を付ける。受身（行われる）・使役（行わせる）・非隣接は対象外。ラベル付き14サンプル（detection 5/5、fpr 0/9）と実コーパス15件（真陽性15/15、全件で意味・声を保持）で事前登録した採用条件を満たした
 - 読解負荷レーン（`--reading-load`）に `no_comma_sentence`: 60字以上の日本語散文に読点が1つもない文を指さす（岩淵悦太郎編『悪文』・本多勝一『日本語の作文技術』の句読法に基づく狭い下位事例。読点密度の検出はNO-GOのまま）。ラベル付き14サンプルと実コーパス真陽性2/2で確認した
 - 文レベルの文頭接続詞率を`stats.conjunction`の観測値として追加した。本コーパスでは人間/AIを分離しなかったためfindingにはしない
-- コーパス取得基盤: `eval/sources.toml`（人間93ソースのmanifest、coji/natural-japanese@0f1cc1cのsources.jsonをMIT出典明記で初期値化、unit単位のdev/holdout割当）、`scripts/fetch-corpus.py`（本文非コミットで取得し`external-lock.json`へSHA-256を記録。81/81件成功）、`scripts/generate-ai-corpus.sh`（未修正AI文書の生成と出典記録）。青空文庫の随筆12件を評価コーパスへ追加し、holdout splitを初めて充足した
+- コーパス取得基盤: `eval/sources.toml`（人間93ソースのmanifest、coji/natural-japanese@0f1cc1cのsources.jsonをMIT出典明記で初期値化、unit単位のdev/holdout割当）、外部文書取得処理（本文非コミットで取得し`external-lock.json`へSHA-256を記録。81/81件成功）、`scripts/generate-ai-corpus.sh`（未修正AI文書の生成と出典記録）。青空文庫の随筆12件を評価コーパスへ追加し、holdout splitを初めて充足した
 - `suiko-eval report --split dev|holdout` と `--external`。閾値確定後のholdout一度きり評価を2026-08-19に実施した（退行なし。eval/calibration.md）
 - Agent SkillにCLI不在時の自己導入手順（`cargo install suiko`）を追加し、READMEへ`gh skill install`とビルド済みバイナリでの導入方法を記載した
 
@@ -76,7 +87,7 @@ Suikoの公開リリースを記録する。日付はJSTで、各項目は実測
 - 参考文献リスト行（`[1] …`、`[^1]: …`）とコード注釈行（`#A …`）を本文からマスクし、抑制行数を`stats.masking`へ出力
 - 読者観測値`stats.readability`（平均文長、動詞・助詞比率、文字種比率）。難易度スコアは校正データが揃うまで実装しない
 - 評価基盤: `corpus.toml`の`[[sample]]`正解ラベル（29件・13カテゴリ）と`suiko-eval labeled`、sweep 6ルール、Wilson 95%区間・分母・`low_n`・評価集合の版（manifest SHA-256）の出力、`split = dev/holdout`契約（sweepはdevのみ）、`eval/annotation-guide.md`
-- Agent Skill導入の検証（`scripts/verify-skill-install.sh`と構造テスト）、辞書取得の`scripts/fetch-dictionary.sh`
+- Agent Skill導入の検証（`scripts/verify-skill-install.sh`と構造テスト）、`build.rs`による辞書取得とSHA-256検証
 
 ### 変更
 

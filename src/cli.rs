@@ -429,12 +429,33 @@ fn github_escape_property(value: &str) -> String {
         .replace(':', "%3A")
 }
 
-fn github_annotation(file: &str, finding: &Finding, severity_override: Option<&str>) -> String {
-    let command = match severity_override.unwrap_or(finding.severity.as_str()) {
+fn output_level(severity: &str, fallback_level: &'static str) -> &'static str {
+    match severity {
         "critical" => "error",
         "warn" => "warning",
-        _ => "notice",
-    };
+        _ => fallback_level,
+    }
+}
+
+fn lint_findings(run: &LintRun) -> impl Iterator<Item = (&Finding, Option<&'static str>)> {
+    run.report
+        .findings
+        .iter()
+        .map(|finding| (finding, None))
+        // 読解負荷レーンは自然度と分離して、常にinfo相当で出力する。
+        .chain(run.reading_load.iter().flat_map(|report| {
+            report
+                .findings
+                .iter()
+                .map(|finding| (finding, Some("info")))
+        }))
+}
+
+fn github_annotation(file: &str, finding: &Finding, severity_override: Option<&str>) -> String {
+    let command = output_level(
+        severity_override.unwrap_or(finding.severity.as_str()),
+        "notice",
+    );
     let mut properties = format!("file={}", github_escape_property(file));
     if let Some(span) = &finding.span {
         properties.push_str(&format!(
@@ -457,11 +478,7 @@ fn github_annotation(file: &str, finding: &Finding, severity_override: Option<&s
 /// SARIF 2.1.0の最小構成。columnKind=unicodeCodePointsを宣言することで、
 /// spanのUnicode scalar数え・1始まりの列をそのまま使える。
 fn sarif_result(file: &str, finding: &Finding, level_override: Option<&str>) -> serde_json::Value {
-    let level = match level_override.unwrap_or(finding.severity.as_str()) {
-        "critical" => "error",
-        "warn" => "warning",
-        _ => "note",
-    };
+    let level = output_level(level_override.unwrap_or(finding.severity.as_str()), "note");
     let region = if let Some(span) = &finding.span {
         serde_json::json!({
             "startLine": span.start_line,
@@ -489,16 +506,9 @@ fn sarif_output(runs: &[LintRun]) -> serde_json::Value {
     let mut results = Vec::new();
     let mut rule_ids = std::collections::BTreeSet::new();
     for run in runs {
-        for finding in &run.report.findings {
+        for (finding, level_override) in lint_findings(run) {
             rule_ids.insert(finding.category.clone());
-            results.push(sarif_result(&run.file, finding, None));
-        }
-        if let Some(reading_load) = &run.reading_load {
-            for finding in &reading_load.findings {
-                rule_ids.insert(finding.category.clone());
-                // 読解負荷レーンは自然度と分離した指さしなので、常にnoteで出す
-                results.push(sarif_result(&run.file, finding, Some("info")));
-            }
+            results.push(sarif_result(&run.file, finding, level_override));
         }
     }
     serde_json::json!({
@@ -521,14 +531,11 @@ fn sarif_output(runs: &[LintRun]) -> serde_json::Value {
 }
 
 fn print_lint_github(run: &LintRun) {
-    for finding in &run.report.findings {
-        println!("{}", github_annotation(&run.file, finding, None));
-    }
-    if let Some(reading_load) = &run.reading_load {
-        for finding in &reading_load.findings {
-            // 読解負荷レーンは自然度と分離した指さしなので、常にnoticeで出す
-            println!("{}", github_annotation(&run.file, finding, Some("info")));
-        }
+    for (finding, severity_override) in lint_findings(run) {
+        println!(
+            "{}",
+            github_annotation(&run.file, finding, severity_override)
+        );
     }
 }
 
