@@ -3,6 +3,7 @@ use std::fs;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serde_json::Value;
+use suiko::{lint, morphology::Morphology};
 use tempfile::tempdir;
 
 fn draft(contents: &str) -> (tempfile::TempDir, std::path::PathBuf) {
@@ -10,6 +11,85 @@ fn draft(contents: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let path = dir.path().join("draft.md");
     fs::write(&path, contents).expect("write draft");
     (dir, path)
+}
+
+#[test]
+fn inanimate_subject_reports_one_finding_per_actionable_span() {
+    let morphology = Morphology::new().expect("initialize morphology");
+    let cases = [
+        (
+            "これは、情報がシステム内をどのように流れるかを示すフローチャートを描くようなものです。\n",
+            vec![("inanimate_subject_morph", 0)],
+        ),
+        (
+            "これは変化を物語る。\n",
+            vec![("inanimate_subject_morph", 0)],
+        ),
+        (
+            "それは問題を証明する。\n",
+            vec![("english_syntax_inanimate_subject", 0)],
+        ),
+        (
+            "これは結果を示す。これは問題を示す。\n",
+            vec![
+                ("inanimate_subject_morph", 0),
+                ("inanimate_subject_morph", 27),
+            ],
+        ),
+    ];
+
+    for (text, expected) in cases {
+        let report = lint::analyze(text, &morphology, Some("tech"), false).expect("analyze text");
+        let actual = report
+            .findings
+            .iter()
+            .filter(|finding| {
+                matches!(
+                    finding.category.as_str(),
+                    "english_syntax_inanimate_subject" | "inanimate_subject_morph"
+                )
+            })
+            .map(|finding| {
+                (
+                    finding.category.as_str(),
+                    finding.span.expect("finding span").start_byte,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "input: {text}");
+    }
+}
+
+#[test]
+fn double_negative_distinguishes_relative_clauses_from_same_predicate() {
+    let morphology = Morphology::new().expect("initialize morphology");
+    for text in [
+        "必要のないデータは保存しません。\n",
+        "測定できないものは改善できません。\n",
+        "裏付けのない主張を追加せず、確認できない内容は書きません。\n",
+    ] {
+        let report =
+            lint::analyze_reading_load(text, &morphology, Some("tech")).expect("analyze text");
+        assert_eq!(
+            report.stats.by_category.get("double_negative"),
+            None,
+            "input: {text}"
+        );
+    }
+
+    for text in [
+        "ないわけではありません。\n",
+        "なくはありません。\n",
+        "必要のないデータはありません。\n",
+    ] {
+        let report =
+            lint::analyze_reading_load(text, &morphology, Some("tech")).expect("analyze text");
+        assert_eq!(
+            report.stats.by_category.get("double_negative"),
+            Some(&1),
+            "input: {text}"
+        );
+    }
 }
 
 #[test]

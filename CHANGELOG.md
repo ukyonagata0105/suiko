@@ -4,6 +4,11 @@ Suikoの公開リリースを記録する。日付はJSTで、各項目は実測
 
 ## [Unreleased]
 
+### 修正
+
+- `english_syntax_inanimate_subject`と`inanimate_subject_morph`が同じ行の同一または包含範囲を示す場合、形態素側だけを利用者向けfindingとして残すようにした
+- `double_negative`で、最初の否定が直後の名詞を修飾し、その名詞に`は`、`が`、`を`、`も`が続く場合は、後続述語の否定と別の対象に掛かるものとして除外した
+
 ### 変更
 
 - 外部評価文書の取得処理をPythonから`suiko-eval fetch`へ移し、HTML/PDFの抽出、SHA-256の記録、取得日時の保存をRustだけで実行できるようにした。途中の書き込みに失敗しても、完了分と失敗内容をlockへ保存する
@@ -11,7 +16,7 @@ Suikoの公開リリースを記録する。日付はJSTで、各項目は実測
 - sudachi.rsとSudachiDictの更新確認からPythonを除き、`gh`、または`curl`と`jq`で確認するようにした
 - `cargo coupling`と`similarity-rs`で全Rustコードを解析し、見出し解析、出力形式ごとのfinding走査、形態素トークン走査、評価ファイルの読み込み処理にあった重複を整理した
 
-互換性: 通常のlint結果と公開JSONの形は不変。評価用の外部文書取得コマンドは`cargo run --features evaluation --bin suiko-eval -- fetch eval/sources.toml`へ変わる。
+互換性: 公開JSONの形は不変。同一範囲の無生物主語と、別の対象へ掛かる否定のfindingが減るため、既存の件数とbaseline比較結果が変わる場合がある。評価用の外部文書取得コマンドは`cargo run --features evaluation --bin suiko-eval -- fetch eval/sources.toml`へ変わる。
 
 ## [0.3.3] - 2026-08-25
 

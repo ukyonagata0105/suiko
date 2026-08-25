@@ -16,6 +16,31 @@ fn reading_length(text: &str) -> usize {
     whitespace.replace_all(text, " ").trim().chars().count()
 }
 
+fn first_negation_modifies_noun(
+    tokens: &[crate::morphology::Morpheme],
+    first: usize,
+    second: usize,
+) -> bool {
+    if tokens[first + 1..second]
+        .iter()
+        .any(|token| token.dictionary_form() == "ある")
+    {
+        return false;
+    }
+    let Some(_) = tokens.get(first + 1).filter(|token| {
+        matches!(token.pos(0), "名詞" | "代名詞")
+            && !matches!(token.surface.as_str(), "こと" | "わけ" | "はず")
+    }) else {
+        return false;
+    };
+    let Some(particle) = tokens.get(first + 2) else {
+        return false;
+    };
+    first + 2 < second
+        && particle.pos(0) == "助詞"
+        && matches!(particle.surface.as_str(), "は" | "が" | "を" | "も")
+}
+
 pub fn analyze_reading_load(
     raw: &str,
     morphology: &Morphology,
@@ -171,6 +196,7 @@ pub fn analyze_reading_load_with_thresholds(
                 && !punctuation_between(&sentence.tokens, first, second)
                 && !obligation
                 && !conditional_negative.is_match(&phrase)
+                && !first_negation_modifies_noun(&sentence.tokens, first, second)
             {
                 let mut finding = Finding::new(
                     sentence.line,

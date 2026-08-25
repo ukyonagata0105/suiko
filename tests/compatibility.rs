@@ -20,8 +20,9 @@ fn calibrated_fixtures_keep_their_finding_counts() {
     let natural = lint_fixture("natural.md", false);
     let natural_experimental = lint_fixture("natural.md", true);
 
-    assert_eq!(smelly["stats"]["total_findings"], 21);
-    assert_eq!(smelly_experimental["stats"]["total_findings"], 30);
+    // 同一範囲の表層・形態素検出2件を形態素側の1件へまとめるため、従来より2件減る。
+    assert_eq!(smelly["stats"]["total_findings"], 19);
+    assert_eq!(smelly_experimental["stats"]["total_findings"], 28);
     assert_eq!(natural["stats"]["total_findings"], 0);
     assert_eq!(natural_experimental["stats"]["total_findings"], 0);
 }

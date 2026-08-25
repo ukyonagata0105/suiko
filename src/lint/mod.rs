@@ -191,6 +191,29 @@ fn make_span(
     })
 }
 
+fn span_contains(outer: Span, inner: Span) -> bool {
+    (outer.start_line, outer.start_byte) <= (inner.start_line, inner.start_byte)
+        && (outer.end_line, outer.end_byte) >= (inner.end_line, inner.end_byte)
+}
+
+fn suppress_surface_inanimate_duplicates(findings: &mut Vec<Finding>) {
+    let morph_spans = findings
+        .iter()
+        .filter(|finding| finding.category == "inanimate_subject_morph")
+        .filter_map(|finding| finding.span)
+        .collect::<Vec<_>>();
+    findings.retain(|finding| {
+        if finding.category != "english_syntax_inanimate_subject" {
+            return true;
+        }
+        finding.span.is_none_or(|surface_span| {
+            !morph_spans.iter().any(|morph_span| {
+                span_contains(surface_span, *morph_span) || span_contains(*morph_span, surface_span)
+            })
+        })
+    });
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct LintStats {
     pub total_findings: usize,
@@ -313,6 +336,7 @@ pub fn analyze_with_thresholds(
     findings.extend(lexical_findings);
     findings.extend(specificity_findings);
     findings.extend(paragraph_analysis.findings);
+    suppress_surface_inanimate_duplicates(&mut findings);
 
     let sentence_lengths = split
         .iter()
