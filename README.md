@@ -17,6 +17,7 @@ cargo install suiko
 - `lint`: 禁止語、翻訳調、定型的な対比、リズム、段落構造、語彙、英語統語の疑いを検出
 - `outline`: 見出し、段落の先頭文、箇条書きを抽出して論旨を俯瞰
 - `terms`: 略語、カタカナ複合語、固有名詞候補と初出時の説明手掛かりを抽出
+- `academic`: 執筆者が記録した監査契約に照らして、論証と提出用成果物の不変条件を確認
 - Markdownのfront matter、コードフェンス、インラインコード、リンクURL、埋め込み引用行、表、HTMLタグとコメント、参考文献リスト行（`[1] …`、`[^1]: …`）、「参考文献」「引用文献」「References」「Bibliography」見出し以下の行、コード注釈行（`#A …`）をマスク（抑制した行数は`stats.masking`に出力）
 - `essay` / `tech` / `business` のジャンル別閾値
 - 修正前JSONとの `resolved` / `new` / `persisting` 比較
@@ -97,6 +98,23 @@ suiko terms --audit docs/*.md --json
 # 標準入力
 printf '重要なのは、結論です。\n' | suiko lint - --json
 ```
+
+### 学術稿の論証・納品監査
+
+`academic` は、学術論文の意味を自動採点する機能ではありません。中心命題、説明対象、用語の来歴、維持する論証順序、節間の橋、注の置き場所を、執筆者が先に記録した**監査契約**（Suiko内のローカルな機械可読作業記録）と照合します。契約があることで、推敲の都合だけで研究課題、章順、概念、結論を変えることを防ぎます。
+
+```sh
+suiko academic paper.md --contract academic-contract.json --json
+
+# 提出用成果物まで確認する場合
+suiko academic paper.md --contract academic-contract.json \
+  --docx submission.docx --template official-template.docx \
+  --pdf submission.pdf --export-record delivery-record.json
+```
+
+このレーンは、形式的なリサーチ・クエスチョンを置かない方針、用語の出典又は造語表示、防御的留保候補、本文引用と参考文献の同一書誌行にある著者・年、段落第一文と節間の共有対象、本文・注・不要の注分類を確認します。契約の論証順序、用語、第一文順、文体プロファイルは明示必須です。DOCXとPDFを片方でも指定した場合は、公式テンプレートと納品記録も必須になります。`delivery-record.json` にはMicrosoft WordでのPDF書き出し、PDF全頁を画像として目視した記録、Markdown/DOCX/PDFのSHA-256を記録します。JSONの`passed`は指定された全チェックの合格、`delivery_ready`は提出可能な成果物監査まで通った状態を示します。
+
+契約の完全な項目と、最終PDFの目視確認を含む手順は[academic-delivery.md](skills/suiko/references/academic-delivery.md)を参照してください。
 
 複数ファイルのJSONは、単一ファイルと同じレコードを配列で返します。単一ファイルの `lint --json` は `file`、`suiko_version`、`stats`、`findings` を持つオブジェクトです。
 
