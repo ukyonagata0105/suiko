@@ -24,10 +24,9 @@ Suikoの公開リリースを記録する。日付はJSTで、各項目は実測
 - SudachiDictの取得と検証を`build.rs`へ一本化し、重複していた辞書取得用シェルスクリプトとCIの事前取得手順を削除した
 - sudachi.rsとSudachiDictの更新確認からPythonを除き、`gh`、または`curl`と`jq`で確認するようにした
 - `cargo coupling`と`similarity-rs`で全Rustコードを解析し、見出し解析、出力形式ごとのfinding走査、形態素トークン走査、評価ファイルの読み込み処理にあった重複を整理した
-- Agent Skillの名前と配置を`suiko`から`home-suiko`へ変更し、README、導入確認スクリプト、評価テストの参照先を揃えた
 - 抽象的な「持つ」は現代日本語で広く使われるため、`を持つ(こと|存在)`という広い文字列規則を削除した。対象を上記3形態素列へ限定し、手引きも一律な翻訳調判定ではなく読み直し候補の説明へ改めた
 
-互換性: 公開JSONの形は不変。新しい5カテゴリは`--experimental`指定時だけ出力する。`translationese_morph`の候補追加、重複findingの抑制、否定の係り先判定、参考文献のマスクによって既存の件数とbaseline比較結果が変わる場合がある。旧版のbaselineは版の照合で拒否されるため、v0.3.4で作り直す必要がある。Agent Skillは`home-suiko`として導入し直す。評価用の外部文書取得コマンドは`cargo run --features evaluation --bin suiko-eval -- fetch eval/sources.toml`へ変わる。
+互換性: 公開JSONの形は不変。新しい5カテゴリは`--experimental`指定時だけ出力する。`translationese_morph`の候補追加、重複findingの抑制、否定の係り先判定、参考文献のマスクによって既存の件数とbaseline比較結果が変わる場合がある。旧版のbaselineは版の照合で拒否されるため、v0.3.4で作り直す必要がある。評価用の外部文書取得コマンドは`cargo run --features evaluation --bin suiko-eval -- fetch eval/sources.toml`へ変わる。
 
 ## [0.3.3] - 2026-08-25
 

@@ -7,7 +7,7 @@ use serde::Deserialize;
 // オフラインで検証する。実登録の検証は scripts/verify-skill-install.sh。
 #[test]
 fn skill_bundle_references_resolve() {
-    let root = Path::new("skills/home-suiko");
+    let root = Path::new("skills/suiko");
     for required in [
         "SKILL.md",
         "agents/openai.yaml",
@@ -65,7 +65,7 @@ struct TriggerCase {
 #[test]
 fn trigger_cases_have_a_stable_complete_shape() {
     let suite: TriggerSuite =
-        serde_json::from_str(include_str!("../skills/home-suiko/evals/trigger-cases.json"))
+        serde_json::from_str(include_str!("../skills/suiko/evals/trigger-cases.json"))
             .expect("valid trigger evaluation suite");
 
     assert_eq!(suite.version, 1);

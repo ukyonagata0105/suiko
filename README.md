@@ -10,7 +10,7 @@
 cargo install suiko
 ```
 
-名前は、文章を練り直す日本語の「推敲」から取りました。バイナリとcrateの名前は `suiko`、Agent Skillの名前は `home-suiko` です。形態素辞書はバイナリへ埋め込まれるため、実行時に辞書やモデルをダウンロードしません。
+名前は、文章を練り直す日本語の「推敲」から取りました。バイナリ、crate、Agent Skillの名前を `suiko` に統一しています。形態素辞書はバイナリへ埋め込まれるため、実行時に辞書やモデルをダウンロードしません。
 
 ## 特徴
 
@@ -201,23 +201,25 @@ reason = "連載固有の見出し"
 
 ## Agent Skill
 
-[`skills/home-suiko/SKILL.md`](skills/home-suiko/SKILL.md) は、診断だけでなく文書設計、執筆、findingの採否、再検査までを扱います。Skill対応エージェントでは `$home-suiko` として利用できます。
+[`skills/suiko/SKILL.md`](skills/suiko/SKILL.md) は、診断だけでなく文書設計、執筆、findingの採否、再検査までを扱います。Skill対応エージェントでは `$suiko` として利用できます。
 
 基本原則は「検出は機械、判断は文脈」です。findingを一律に消すのではなく、各項目を「直した」または「残す（理由）」へ分類します。
 
-CLIとAgent Skillは別々に導入します。上記のビルド手順はCLIだけを、次のコマンドは`home-suiko` Skillだけを導入します。
+CLIとAgent Skillは別々に導入します。上記のビルド手順はCLIだけを、次のコマンドは`suiko` Skillだけを導入します。
 
 ```sh
-npx skills add https://github.com/nwiizo/suiko --skill home-suiko
+npx skills add https://github.com/nwiizo/suiko --skill suiko
 ```
 
 GitHub CLI（`gh skill`、preview）でも導入できます。既定では最新のリリースタグが導入され、スコープは`project`（現在のリポジトリ内）です。ユーザー全体で使う場合は`--scope user`を付けます。
 
 ```sh
-gh skill install nwiizo/suiko home-suiko --agent claude-code
+gh skill install nwiizo/suiko suiko --agent claude-code
 ```
 
-導入後は`suiko --version`でCLIを確認し、Skill対応エージェントでは`$home-suiko`を指定します。Skillを先に導入した環境でCLIがない場合、Skillは`cargo install suiko`でCLIの導入を試み、`cargo`がない環境では導入手順の案内と同梱の手動チェックリストによる診断へ切り替えます。
+導入後は`suiko --version`でCLIを確認し、Skill対応エージェントでは`$suiko`を指定します。Skillを先に導入した環境でCLIがない場合、Skillは`cargo install suiko`でCLIの導入を試み、`cargo`がない環境では導入手順の案内と同梱の手動チェックリストによる診断へ切り替えます。
+
+Node.js 20.18以降とnpmが使える環境では、Agent Skillから[@textlint-ja/textlint-rule-preset-ai-writing](https://github.com/textlint-ja/textlint-rule-preset-ai-writing)による補助検査も実行できます。同梱スクリプトが固定バージョンをnpmの一時環境で実行するため、対象プロジェクトの依存関係や設定ファイルは変更しません。結果はSuikoのfinding、自然度スコア、baselineへ加算せず、自動修正も行いません。利用できない環境ではSuikoだけで診断を続けます。
 
 ## 対象範囲
 
