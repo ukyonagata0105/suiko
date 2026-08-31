@@ -4,6 +4,7 @@ use std::io::Read;
 use std::path::Path;
 
 use quick_xml::Reader;
+use quick_xml::escape::resolve_xml_entity;
 use quick_xml::events::Event;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,9 @@ pub struct AcademicContract {
     pub required_order: Vec<String>,
     pub terms: Vec<TermContract>,
     pub proper_nouns: Vec<String>,
+    /// 同一著者を異なる文字体系で記す場合の正規化（例: 井庭 -> iba）。
+    #[serde(default)]
+    pub citation_aliases: BTreeMap<String, String>,
     /// 段落第一文が進めるべき論旨を、本文に出る順で記録する。
     pub first_sentence_order: Vec<String>,
     pub section_bridges: Vec<SectionBridge>,
@@ -37,6 +41,9 @@ pub struct AcademicContract {
     pub sync_omit_fragments: Vec<String>,
     #[serde(default = "default_mutable_entries")]
     pub docx_mutable_entries: Vec<String>,
+    /// DOCX本文で確認する見出し・表題・図題等の出現順。
+    #[serde(default)]
+    pub docx_layout_order: Vec<String>,
 }
 
 fn default_mutable_entries() -> Vec<String> {
@@ -194,6 +201,7 @@ fn validate_contract(contract: &AcademicContract) -> Result<(), Error> {
 
 fn normalized(text: &str) -> String {
     text.chars()
+        .map(|ch| if ch == '：' { ':' } else { ch })
         .filter(|ch| !ch.is_whitespace() && !ch.is_control())
         .filter(|ch| !matches!(ch, '*' | '_' | '`'))
         .collect()
@@ -203,6 +211,7 @@ fn normalized(text: &str) -> String {
 struct SourceView {
     main_markdown: String,
     main_text: String,
+    citation_text: String,
     sync_text: String,
     prose_paragraphs: Vec<String>,
     references: Vec<String>,
@@ -230,6 +239,36 @@ fn is_reference_heading(title: &str) -> bool {
         title.to_ascii_lowercase().as_str(),
         "参考文献" | "引用文献" | "references" | "bibliography"
     )
+}
+
+fn is_note_heading(title: &str) -> bool {
+    let title = title.trim_matches(|ch: char| {
+        ch.is_whitespace()
+            || matches!(
+                ch,
+                '-' | '―' | '—' | '–' | '━' | 'ー' | '_' | '=' | '~' | '＊' | '*' | '・'
+            )
+    });
+    matches!(
+        title.to_ascii_lowercase().as_str(),
+        "注" | "注記" | "notes" | "endnotes"
+    )
+}
+
+fn ascii_digits(text: &str) -> String {
+    text.chars()
+        .map(|ch| match ch {
+            '０'..='９' => char::from_u32(ch as u32 - '０' as u32 + '0' as u32).unwrap_or(ch),
+            _ => ch,
+        })
+        .collect()
+}
+
+fn normalize_note_marker(marker: &str) -> String {
+    let marker = marker.trim().trim_start_matches("[^").trim_end_matches(']');
+    let marker = marker.strip_prefix('注').unwrap_or(marker);
+    let marker = marker.trim_end_matches(['）', ')', '．', '.']).trim();
+    ascii_digits(marker)
 }
 
 fn fence_marker(line: &str) -> Option<(char, usize)> {
@@ -263,6 +302,21 @@ fn plain_markdown(text: &str) -> String {
         .map(|line| footnote.replace_all(&line, "").into_owned())
         .map(|line| html.replace_all(&line, "").into_owned())
         .map(|line| line.replace(['*', '_', '`', '|'], " "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn citation_markdown(text: &str) -> String {
+    let image = Regex::new(r"!\[([^]]*)\]\([^)]+\)").expect("valid image regex");
+    let link = Regex::new(r"\[([^]]+)\]\([^)]+\)").expect("valid link regex");
+    let footnote = Regex::new(r"\[\^[^]]+\]").expect("valid footnote regex");
+    text.lines()
+        .filter(|line| !is_table_separator(line))
+        .map(|line| heading(line).map_or_else(|| line.to_owned(), |(_, title)| title))
+        .map(|line| image.replace_all(&line, "$1").into_owned())
+        .map(|line| link.replace_all(&line, "$1").into_owned())
+        .map(|line| footnote.replace_all(&line, "").into_owned())
+        .map(|line| line.replace(['*', '_', '`'], " "))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -317,7 +371,12 @@ fn source_view(source: &str, omit_prefixes: &[String]) -> SourceView {
     let lines = source.lines().map(str::to_owned).collect::<Vec<_>>();
     let note_definition = Regex::new(r"^\[\^([^]]+)\]:\s*(.*)$").expect("valid note regex");
     let note_reference = Regex::new(r"\[\^([^]]+)\]").expect("valid note reference regex");
+    let japanese_note_definition =
+        Regex::new(r"^\s*注\s*([0-9０-９]+)[）)．.]\s*(.*)$").expect("valid Japanese note regex");
+    let japanese_note_reference =
+        Regex::new(r"注\s*([0-9０-９]+)[）)]").expect("valid Japanese note reference regex");
     let mut main_lines = Vec::new();
+    let mut citation_lines = Vec::new();
     let mut sync_lines = Vec::new();
     let mut reference_lines = Vec::new();
     let mut notes = BTreeMap::new();
@@ -325,6 +384,7 @@ fn source_view(source: &str, omit_prefixes: &[String]) -> SourceView {
     let mut front_matter = false;
     let mut fence: Option<(char, usize)> = None;
     let mut reference_level = None;
+    let mut note_level = None;
     let mut index = 0;
     while index < lines.len() {
         let line = &lines[index];
@@ -358,6 +418,14 @@ fn source_view(source: &str, omit_prefixes: &[String]) -> SourceView {
         if let Some((level, title)) = heading(line) {
             if is_reference_heading(&title) {
                 reference_level = Some(level);
+                note_level = None;
+                sync_lines.push(line.to_owned());
+                index += 1;
+                continue;
+            }
+            if is_note_heading(&title) {
+                note_level = Some(level);
+                reference_level = None;
                 sync_lines.push(line.to_owned());
                 index += 1;
                 continue;
@@ -365,9 +433,12 @@ fn source_view(source: &str, omit_prefixes: &[String]) -> SourceView {
             if reference_level.is_some_and(|current| level <= current) {
                 reference_level = None;
             }
+            if note_level.is_some_and(|current| level <= current) {
+                note_level = None;
+            }
         }
         if let Some(capture) = note_definition.captures(line) {
-            let marker = capture[1].to_owned();
+            let marker = normalize_note_marker(&capture[1]);
             let mut contents = vec![capture[2].to_owned()];
             index += 1;
             while index < lines.len()
@@ -382,8 +453,42 @@ fn source_view(source: &str, omit_prefixes: &[String]) -> SourceView {
                 .any(|prefix| contents.starts_with(prefix))
             {
                 sync_lines.push(contents.clone());
+                citation_lines.push(contents.clone());
             }
             notes.insert(marker, contents);
+            continue;
+        }
+        if note_level.is_some() {
+            if let Some(capture) = japanese_note_definition.captures(line) {
+                let marker = normalize_note_marker(&capture[1]);
+                let mut contents = vec![capture[2].to_owned()];
+                let mut raw_lines = vec![line.to_owned()];
+                index += 1;
+                while index < lines.len()
+                    && (lines[index].starts_with(' ') || lines[index].starts_with('\t'))
+                {
+                    contents.push(lines[index].trim().to_owned());
+                    raw_lines.push(lines[index].to_owned());
+                    index += 1;
+                }
+                let contents = contents.join(" ").trim().to_owned();
+                if !omit_prefixes
+                    .iter()
+                    .any(|prefix| contents.starts_with(prefix))
+                {
+                    sync_lines.extend(raw_lines);
+                    citation_lines.push(contents.clone());
+                }
+                notes.insert(marker, contents);
+                continue;
+            }
+            if !omit_prefixes
+                .iter()
+                .any(|prefix| trimmed.starts_with(prefix))
+            {
+                sync_lines.push(line.to_owned());
+            }
+            index += 1;
             continue;
         }
         let omitted = omit_prefixes
@@ -398,9 +503,17 @@ fn source_view(source: &str, omit_prefixes: &[String]) -> SourceView {
             continue;
         }
         if !omitted {
+            citation_lines.push(line.to_owned());
             if !trimmed.starts_with('|') {
                 for capture in note_reference.captures_iter(line) {
-                    *note_references.entry(capture[1].to_owned()).or_default() += 1;
+                    *note_references
+                        .entry(normalize_note_marker(&capture[1]))
+                        .or_default() += 1;
+                }
+                for capture in japanese_note_reference.captures_iter(line) {
+                    *note_references
+                        .entry(normalize_note_marker(&capture[1]))
+                        .or_default() += 1;
                 }
                 main_lines.push(line.to_owned());
             }
@@ -411,6 +524,7 @@ fn source_view(source: &str, omit_prefixes: &[String]) -> SourceView {
     let main_markdown = main_lines.join("\n");
     SourceView {
         main_text: plain_markdown(&main_markdown),
+        citation_text: citation_markdown(&citation_lines.join("\n")),
         sync_text: plain_markdown(&sync_lines.join("\n")),
         prose_paragraphs: prose_blocks(&main_markdown),
         references: reference_entries(&reference_lines),
@@ -599,19 +713,27 @@ fn normalized_author(author: &str) -> String {
     let author = author
         .trim_start_matches(|ch: char| ch.is_ascii_digit() || matches!(ch, '.' | ')' | ']'))
         .trim();
-    let japanese_name = Regex::new(r"[一-龠々ヶヵ]+$")
-        .expect("valid Japanese author regex")
+    let author = ["と ", "及び ", "ならびに ", "または "]
+        .into_iter()
+        .find_map(|prefix| author.strip_prefix(prefix))
+        .unwrap_or(author);
+    let mixed_latin_tail = Regex::new(r"[A-Za-z][A-Za-z.]*$")
+        .expect("valid mixed-script author regex")
         .find(author)
+        .filter(|_| {
+            author
+                .chars()
+                .any(|ch| matches!(ch, 'ぁ'..='ん' | 'ァ'..='ヶ' | '一'..='龠'))
+        })
         .map(|matched| matched.as_str());
-    let primary = japanese_name.unwrap_or_else(|| {
-        author
-            .split(['・', '&', ',', '，'])
-            .next()
-            .unwrap_or_default()
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-    });
+    let primary = author
+        .split(['・', '&', ',', '，'])
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .next()
+        .unwrap_or_default();
+    let primary = mixed_latin_tail.unwrap_or(primary);
     primary
         .chars()
         .filter(|ch| ch.is_alphanumeric() || matches!(ch, '々' | 'ヶ' | 'ヵ'))
@@ -621,20 +743,29 @@ fn normalized_author(author: &str) -> String {
 
 fn citation_keys(source: &str) -> BTreeSet<String> {
     let narrative = Regex::new(
-        r"(?P<author>[A-Za-z一-龠々ヶヵ・&.,\s]{2,80})\s*[（(]\s*(?P<year>[12][0-9]{3}[a-z]?)\s*[）)]",
+        r"(?:^|[|。！？、；：\s])(?P<author>[A-Za-zぁ-んァ-ヶー一-龠々ヶヵ・&.,\s]{2,80})\s*[（(]\s*(?P<years>[12][0-9]{3}[a-z]?(?:\s*[、,]\s*[12][0-9]{3}[a-z]?)*?)\s*[）)]",
     )
     .expect("valid narrative citation regex");
     let parenthetical = Regex::new(
-        r"(?P<author>[A-Za-z一-龠々ヶヵ・&.\s]{2,80})\s*[,，]\s*(?P<year>[12][0-9]{3}[a-z]?)",
+        r"(?:^|[|。！？、；：\s])(?P<author>[A-Za-zぁ-んァ-ヶー一-龠々ヶヵ・&.\s]{2,80})\s*[,，]\s*(?P<years>[12][0-9]{3}[a-z]?(?:\s*[、,]\s*[12][0-9]{3}[a-z]?)*?)",
     )
     .expect("valid parenthetical citation regex");
+    let years = Regex::new(r"[12][0-9]{3}[a-z]?").expect("valid citation year regex");
     narrative
         .captures_iter(source)
         .chain(parenthetical.captures_iter(source))
-        .filter_map(|capture| {
-            let author = normalized_author(capture.name("author")?.as_str());
-            let year = capture.name("year")?.as_str().to_ascii_lowercase();
-            (!author.is_empty()).then_some(format!("{author}:{year}"))
+        .flat_map(|capture| {
+            let author = capture
+                .name("author")
+                .map(|value| normalized_author(value.as_str()))
+                .unwrap_or_default();
+            capture
+                .name("years")
+                .into_iter()
+                .flat_map(|value| years.find_iter(value.as_str()))
+                .filter(|_| !author.is_empty())
+                .map(|year| format!("{}:{}", author, year.as_str().to_ascii_lowercase()))
+                .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -656,13 +787,23 @@ fn reference_keys(entry: &str) -> Vec<String> {
         .collect()
 }
 
-fn citation_key_matches(citation: &str, reference: &str) -> bool {
+fn citation_key_matches(
+    citation: &str,
+    reference: &str,
+    aliases: &BTreeMap<String, String>,
+) -> bool {
     let Some((citation_author, citation_year)) = citation.split_once(':') else {
         return false;
     };
     let Some((reference_author, reference_year)) = reference.split_once(':') else {
         return false;
     };
+    let citation_author = aliases
+        .get(citation_author)
+        .map_or(citation_author, String::as_str);
+    let reference_author = aliases
+        .get(reference_author)
+        .map_or(reference_author, String::as_str);
     citation_year == reference_year
         && (citation_author == reference_author
             || (citation_author
@@ -675,8 +816,12 @@ fn citation_key_matches(citation: &str, reference: &str) -> bool {
                     || reference_author.starts_with(citation_author))))
 }
 
-fn audit_citations(checks: &mut Vec<AcademicCheck>, view: &SourceView) {
-    let cited = citation_keys(&view.main_text);
+fn audit_citations(
+    checks: &mut Vec<AcademicCheck>,
+    view: &SourceView,
+    aliases: &BTreeMap<String, String>,
+) {
+    let cited = citation_keys(&view.citation_text);
     let mut references = BTreeMap::<String, usize>::new();
     for entry in &view.references {
         for key in reference_keys(entry) {
@@ -689,7 +834,7 @@ fn audit_citations(checks: &mut Vec<AcademicCheck>, view: &SourceView) {
         .filter(|citation| {
             !referenced
                 .iter()
-                .any(|reference| citation_key_matches(citation, reference))
+                .any(|reference| citation_key_matches(citation, reference, aliases))
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -698,7 +843,7 @@ fn audit_citations(checks: &mut Vec<AcademicCheck>, view: &SourceView) {
         .filter(|reference| {
             !cited
                 .iter()
-                .any(|citation| citation_key_matches(citation, reference))
+                .any(|citation| citation_key_matches(citation, reference, aliases))
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -741,14 +886,11 @@ fn audit_citations(checks: &mut Vec<AcademicCheck>, view: &SourceView) {
 
 fn audit_notes(checks: &mut Vec<AcademicCheck>, view: &SourceView, decisions: &[NoteDecision]) {
     for decision in decisions {
-        let marker = decision
-            .marker
-            .trim_start_matches("[^")
-            .trim_end_matches(']');
+        let marker = normalize_note_marker(&decision.marker);
         let passed = match decision.disposition.as_str() {
-            "note" => view.notes.get(marker).is_some_and(|text| {
+            "note" => view.notes.get(&marker).is_some_and(|text| {
                 text.contains(&decision.text)
-                    && view.note_references.contains_key(marker)
+                    && view.note_references.contains_key(&marker)
                     && !normalized(&view.main_text).contains(&normalized(text))
             }),
             "body" => {
@@ -776,12 +918,7 @@ fn audit_notes(checks: &mut Vec<AcademicCheck>, view: &SourceView, decisions: &[
     }
     let decided = decisions
         .iter()
-        .map(|item| {
-            item.marker
-                .trim_start_matches("[^")
-                .trim_end_matches(']')
-                .to_owned()
-        })
+        .map(|item| normalize_note_marker(&item.marker))
         .collect::<BTreeSet<_>>();
     let undecided = view
         .notes
@@ -863,9 +1000,22 @@ fn word_xml_text(xml: &[u8]) -> Result<String, Error> {
                 let decoded = text
                     .decode()
                     .map_err(|error| Error::Academic(error.to_string()))?;
-                let unescaped = quick_xml::escape::unescape(&decoded)
-                    .map_err(|error| Error::Academic(error.to_string()))?;
-                output.push_str(&unescaped);
+                output.push_str(&decoded);
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                if let Some(character) = reference
+                    .resolve_char_ref()
+                    .map_err(|error| Error::Academic(error.to_string()))?
+                {
+                    output.push(character);
+                } else {
+                    let name = reference
+                        .decode()
+                        .map_err(|error| Error::Academic(error.to_string()))?;
+                    if let Some(value) = resolve_xml_entity(&name) {
+                        output.push_str(value);
+                    }
+                }
             }
             Ok(Event::End(end)) if end.name().as_ref() == b"w:p" => output.push('\n'),
             Ok(Event::Eof) => break,
@@ -890,6 +1040,185 @@ fn docx_text(path: &Path) -> Result<String, Error> {
     Ok(parts.join("\n"))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum DocxLayoutItem {
+    Paragraph(String),
+    Table,
+    Figure,
+}
+
+fn docx_layout_items(path: &Path) -> Result<Vec<DocxLayoutItem>, Error> {
+    let entries = zip_entries(path)?;
+    let document = entries
+        .get("word/document.xml")
+        .ok_or_else(|| Error::Academic("DOCXにword/document.xmlがありません".to_owned()))?;
+    let mut reader = Reader::from_reader(document.as_slice());
+    let mut items = Vec::new();
+    let mut table_depth = 0usize;
+    let mut in_paragraph = false;
+    let mut paragraph_text = String::new();
+    let mut paragraph_has_figure = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(start)) => match start.name().as_ref() {
+                b"w:tbl" => {
+                    if table_depth == 0 {
+                        items.push(DocxLayoutItem::Table);
+                    }
+                    table_depth += 1;
+                }
+                b"w:p" if table_depth == 0 => {
+                    in_paragraph = true;
+                    paragraph_text.clear();
+                    paragraph_has_figure = false;
+                }
+                b"w:drawing" if in_paragraph && table_depth == 0 => {
+                    paragraph_has_figure = true;
+                }
+                _ => {}
+            },
+            Ok(Event::Empty(empty)) => match empty.name().as_ref() {
+                b"w:drawing" if in_paragraph && table_depth == 0 => {
+                    paragraph_has_figure = true;
+                }
+                _ => {}
+            },
+            Ok(Event::Text(text)) if in_paragraph && table_depth == 0 => {
+                let decoded = text
+                    .decode()
+                    .map_err(|error| Error::Academic(error.to_string()))?;
+                paragraph_text.push_str(&decoded);
+            }
+            Ok(Event::GeneralRef(reference)) if in_paragraph && table_depth == 0 => {
+                if let Some(character) = reference
+                    .resolve_char_ref()
+                    .map_err(|error| Error::Academic(error.to_string()))?
+                {
+                    paragraph_text.push(character);
+                } else {
+                    let name = reference
+                        .decode()
+                        .map_err(|error| Error::Academic(error.to_string()))?;
+                    if let Some(value) = resolve_xml_entity(&name) {
+                        paragraph_text.push_str(value);
+                    }
+                }
+            }
+            Ok(Event::End(end)) => match end.name().as_ref() {
+                b"w:p" if in_paragraph && table_depth == 0 => {
+                    if paragraph_has_figure {
+                        items.push(DocxLayoutItem::Figure);
+                    }
+                    let text = paragraph_text.trim();
+                    if !text.is_empty() {
+                        items.push(DocxLayoutItem::Paragraph(text.to_owned()));
+                    }
+                    in_paragraph = false;
+                }
+                b"w:tbl" => table_depth = table_depth.saturating_sub(1),
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(error) => return Err(Error::Academic(error.to_string())),
+        }
+    }
+    Ok(items)
+}
+
+fn audit_docx_layout(
+    checks: &mut Vec<AcademicCheck>,
+    docx: &Path,
+    required_order: &[String],
+) -> Result<(), Error> {
+    let items = docx_layout_items(docx)?;
+    let caption = Regex::new(r"^(表|図)[-－ー]?[0-9０-９]+\s+").expect("valid caption regex");
+    let mut table_captions = 0usize;
+    let mut figure_captions = 0usize;
+    let mut misplaced = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let DocxLayoutItem::Paragraph(text) = item else {
+            continue;
+        };
+        let Some(kind) = caption
+            .captures(text.trim_start())
+            .map(|capture| capture[1].to_owned())
+        else {
+            continue;
+        };
+        let expected = if kind == "表" {
+            table_captions += 1;
+            DocxLayoutItem::Table
+        } else {
+            figure_captions += 1;
+            DocxLayoutItem::Figure
+        };
+        let paired = index
+            .checked_sub(1)
+            .and_then(|previous| items.get(previous))
+            .is_some_and(|item| item == &expected);
+        if !paired {
+            misplaced.push(text.clone());
+        }
+    }
+    let tables = items
+        .iter()
+        .filter(|item| matches!(item, DocxLayoutItem::Table))
+        .count();
+    let figures = items
+        .iter()
+        .filter(|item| matches!(item, DocxLayoutItem::Figure))
+        .count();
+    let pairs_ok = misplaced.is_empty() && tables == table_captions && figures == figure_captions;
+    add_check(
+        checks,
+        "docx_table_figure_placement",
+        pairs_ok,
+        if pairs_ok {
+            format!("表{tables}点・図{figures}点の直後に対応する表題・図題があります")
+        } else {
+            format!(
+                "表/表題 {tables}/{table_captions}、図/図題 {figures}/{figure_captions}、位置不整合: {}",
+                misplaced.join(", ")
+            )
+        },
+    );
+
+    let paragraphs = items
+        .iter()
+        .filter_map(|item| match item {
+            DocxLayoutItem::Paragraph(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut cursor = 0usize;
+    let mut missing = Vec::new();
+    for anchor in required_order {
+        if let Some(offset) = paragraphs[cursor..]
+            .iter()
+            .position(|paragraph| paragraph.contains(anchor))
+        {
+            cursor += offset + 1;
+        } else {
+            missing.push(anchor.clone());
+        }
+    }
+    add_check(
+        checks,
+        "docx_layout_order",
+        missing.is_empty(),
+        if missing.is_empty() {
+            format!(
+                "指定した{}個の配置基準を順に確認しました",
+                required_order.len()
+            )
+        } else {
+            format!("指定位置以降で確認できない配置基準: {}", missing.join(", "))
+        },
+    );
+    Ok(())
+}
+
 fn protected_document_layout(xml: &[u8]) -> Result<Vec<String>, Error> {
     let xml = std::str::from_utf8(xml).map_err(|error| {
         Error::Academic(format!("word/document.xmlはUTF-8ではありません: {error}"))
@@ -897,7 +1226,7 @@ fn protected_document_layout(xml: &[u8]) -> Result<Vec<String>, Error> {
     let section = Regex::new(r#"(?s)<w:sectPr\b.*?</w:sectPr>|<w:sectPr\b[^>]*/>"#)
         .expect("valid section regex");
     let protected = Regex::new(
-        r#"(?s)<w:pgSz\b[^>]*/>|<w:pgMar\b[^>]*/>|<w:cols\b[^>]*/>|<w:pgBorders\b.*?</w:pgBorders>|<w:pgBorders\b[^>]*/>|<w:(?:headerReference|footerReference)\b[^>]*/>"#,
+        r#"(?s)<w:type\b[^>]*/>|<w:pgSz\b[^>]*/>|<w:pgMar\b[^>]*/>|<w:cols\b[^>]*/>|<w:docGrid\b[^>]*/>|<w:pgBorders\b.*?</w:pgBorders>|<w:pgBorders\b[^>]*/>|<w:(?:headerReference|footerReference)\b[^>]*/>"#,
     )
     .expect("valid protected section settings regex");
     Ok(section
@@ -955,6 +1284,34 @@ fn preserves_xml_elements(
 ) -> Result<bool, Error> {
     let before = xml_elements(before, element_names, identity_attribute)?;
     let after = xml_elements(after, element_names, identity_attribute)?;
+    Ok(before
+        .iter()
+        .all(|(identity, value)| after.get(identity) == Some(value)))
+}
+
+fn preserves_horizontal_vml_lines(before: &[u8], after: &[u8]) -> Result<bool, Error> {
+    fn horizontal(xml: &[u8]) -> Result<BTreeMap<String, String>, Error> {
+        let lines = xml_elements(xml, &["v:line"], "id")?;
+        Ok(lines
+            .into_iter()
+            .filter(|(_, attributes)| {
+                let from = attributes
+                    .split(';')
+                    .find_map(|item| item.strip_prefix("from="));
+                let to = attributes
+                    .split(';')
+                    .find_map(|item| item.strip_prefix("to="));
+                match (from, to) {
+                    (Some(from), Some(to)) => {
+                        from.split_once(',').map(|(_, y)| y) == to.split_once(',').map(|(_, y)| y)
+                    }
+                    _ => false,
+                }
+            })
+            .collect())
+    }
+    let before = horizontal(before)?;
+    let after = horizontal(after)?;
     Ok(before
         .iter()
         .all(|(identity, value)| after.get(identity) == Some(value)))
@@ -1020,17 +1377,30 @@ fn audit_ooxml(
         .ok_or_else(|| Error::Academic("DOCXにword/document.xmlがありません".to_owned()))
         .and_then(|xml| protected_document_layout(xml))?;
     let layout_changed = before_layout != after_layout;
+    let template_rules_preserved = preserves_horizontal_vml_lines(
+        before
+            .get("word/document.xml")
+            .expect("template document checked above"),
+        after
+            .get("word/document.xml")
+            .expect("submission document checked above"),
+    )?;
     add_check(
         checks,
         "ooxml_invariants",
-        changed.is_empty() && !layout_changed,
-        if changed.is_empty() && !layout_changed {
-            "許可していないテンプレートOOXMLと本文レイアウトは不変です".to_owned()
+        changed.is_empty() && !layout_changed && template_rules_preserved,
+        if changed.is_empty() && !layout_changed && template_rules_preserved {
+            "許可していないテンプレートOOXML、節設定及び第一頁罫線は不変です".to_owned()
         } else {
             format!(
-                "許可なく変わったOOXML: {}; document.xmlレイアウト変更: {}",
+                "許可なく変わったOOXML: {}; 節設定変更: {}; 第一頁罫線維持: {}",
                 changed.join(", "),
-                if layout_changed { "あり" } else { "なし" }
+                if layout_changed { "あり" } else { "なし" },
+                if template_rules_preserved {
+                    "はい"
+                } else {
+                    "いいえ"
+                }
             )
         },
     );
@@ -1086,11 +1456,11 @@ fn audit_export_record(
 }
 
 fn sync_normalized(text: &str, omitted_fragments: &[String]) -> String {
-    let mut text = text.to_owned();
+    let mut text = normalized(text);
     for fragment in omitted_fragments {
-        text = text.replace(fragment, "");
+        text = text.replace(&normalized(fragment), "");
     }
-    normalized(&text)
+    text
 }
 
 fn sync_inventory(text: &str, omitted_fragments: &[String]) -> SyncInventory {
@@ -1127,6 +1497,25 @@ fn inventories_match(source: &SyncInventory, artifact: &SyncInventory) -> bool {
         && source.duplicate_blocks == artifact.duplicate_blocks
 }
 
+fn inventory_difference(source: &SyncInventory, artifact: &SyncInventory) -> String {
+    fn character_delta(left: &BTreeMap<char, usize>, right: &BTreeMap<char, usize>) -> Vec<String> {
+        left.iter()
+            .filter_map(|(character, count)| {
+                let difference = count.saturating_sub(*right.get(character).unwrap_or(&0));
+                (difference > 0).then(|| format!("{character:?}×{difference}"))
+            })
+            .take(20)
+            .collect()
+    }
+    let source_only = character_delta(&source.characters, &artifact.characters);
+    let artifact_only = character_delta(&artifact.characters, &source.characters);
+    format!(
+        "Markdownのみ [{}] / 成果物のみ [{}]",
+        source_only.join(", "),
+        artifact_only.join(", ")
+    )
+}
+
 fn audit_sync(
     checks: &mut Vec<AcademicCheck>,
     view: &SourceView,
@@ -1147,7 +1536,11 @@ fn audit_sync(
                 text.character_count,
                 source.duplicate_blocks,
                 text.duplicate_blocks,
-                if matches { "一致" } else { "不一致" }
+                if matches {
+                    "一致".to_owned()
+                } else {
+                    format!("不一致; {}", inventory_difference(&source, &text))
+                }
             ),
         );
     }
@@ -1166,7 +1559,11 @@ fn audit_sync(
                 text.character_count,
                 source.duplicate_blocks,
                 text.duplicate_blocks,
-                if matches { "一致" } else { "不一致" }
+                if matches {
+                    "一致".to_owned()
+                } else {
+                    format!("不一致; {}", inventory_difference(&source, &text))
+                }
             ),
         );
     }
@@ -1222,21 +1619,16 @@ pub fn audit(
     );
 
     for term in &contract.terms {
-        let found = main.find(&term.term);
-        let passed = found.is_some_and(|offset| {
-            let start = main[..offset]
-                .char_indices()
-                .rev()
-                .nth(80)
-                .map_or(0, |(index, _)| index);
-            let term_end = offset + term.term.len();
-            let end = main[term_end..]
-                .char_indices()
-                .nth(80)
-                .map_or(main.len(), |(index, _)| term_end + index);
-            let context = &main[start..end];
+        let passed = view.prose_paragraphs.iter().any(|context| {
+            if !context.contains(&term.term) {
+                return false;
+            }
             match term.status.as_str() {
-                "coined" => context.contains("造語"),
+                "coined" => {
+                    context.contains("造語")
+                        || (context.contains("本稿")
+                            && (context.contains("と呼ぶ") || context.contains("と定義")))
+                }
                 "established" | "source-specific" => term
                     .source
                     .as_deref()
@@ -1327,7 +1719,7 @@ pub fn audit(
     );
     audit_bridges(&mut checks, &outline, &contract.section_bridges);
     audit_first_sentence_order(&mut checks, &outline, &contract.first_sentence_order);
-    audit_citations(&mut checks, &view);
+    audit_citations(&mut checks, &view, &contract.citation_aliases);
     audit_proper_nouns(&mut checks, main, &contract.proper_nouns);
     audit_notes(&mut checks, &view, &contract.note_decisions);
 
@@ -1390,6 +1782,9 @@ pub fn audit(
     if let (Some(template), Some(docx)) = (paths.template, paths.docx) {
         audit_ooxml(&mut checks, template, docx, &contract.docx_mutable_entries)?;
     }
+    if let Some(docx) = paths.docx {
+        audit_docx_layout(&mut checks, docx, &contract.docx_layout_order)?;
+    }
     if let Some(record) = paths.export_record {
         audit_export_record(&mut checks, record, paths)?;
     }
@@ -1418,8 +1813,8 @@ mod tests {
     use zip::write::SimpleFileOptions;
 
     use super::{
-        AcademicContract, ArtifactPaths, audit, audit_citations, audit_notes, audit_ooxml,
-        audit_sync, file_sha256, source_view, style_observations,
+        AcademicContract, ArtifactPaths, audit, audit_citations, audit_docx_layout, audit_notes,
+        audit_ooxml, audit_sync, file_sha256, source_view, style_observations,
     };
 
     fn write_docx(path: &std::path::Path, text: &str, style: &str, extra: Option<(&str, &str)>) {
@@ -1821,7 +2216,7 @@ mod tests {
             &[],
         );
         let mut checks = Vec::new();
-        audit_citations(&mut checks, &good);
+        audit_citations(&mut checks, &good, &std::collections::BTreeMap::new());
         assert!(
             checks.iter().all(|item| item.status == "pass"),
             "{checks:#?}"
@@ -1832,7 +2227,7 @@ mod tests {
             &[],
         );
         let mut checks = Vec::new();
-        audit_citations(&mut checks, &bad);
+        audit_citations(&mut checks, &bad, &std::collections::BTreeMap::new());
         assert!(
             checks
                 .iter()
@@ -1853,11 +2248,11 @@ mod tests {
     #[test]
     fn citations_accept_decorated_headings_list_markers_surnames_and_single_publication_year() {
         let good = source_view(
-            "本文中の一般語として参考文献を説明する。秋吉（2000）、Sano (2024a)、田中（2024b）を使う。\n\n| 層 | 原典 |\n| - | - |\n| 戦略 | van de Velde（1999） |\n\n## ―――参考文献―――\n\n- 秋吉貴雄（2000）『行政計画』。doi:10.1000/2010.2025\n1) Sano (2024a). https://example.test/2011\n１）田中太郎（2024b）.\n[1] Other (1999).\n",
+            "本文中の一般語として参考文献を説明する。秋吉（2000）、Sano (2024a)、田中（2024b）を使う。\n\n| 層 | 原典 |\n| - | - |\n| 戦略 | van de Velde（1999） |\n\n## ―――参考文献―――\n\n- 秋吉貴雄（2000）『行政計画』。doi:10.1000/2010.2025\n1) Sano (2024a). https://example.test/2011\n１）田中太郎（2024b）.\n[1] van de Velde (1999).\n[2] Other (1998).\n",
             &[],
         );
         let mut checks = Vec::new();
-        audit_citations(&mut checks, &good);
+        audit_citations(&mut checks, &good, &std::collections::BTreeMap::new());
         assert!(
             checks
                 .iter()
@@ -1879,6 +2274,27 @@ mod tests {
             "list markers must not become author text: {:?}",
             good.references
         );
+    }
+
+    #[test]
+    fn citation_keys_keep_japanese_authors_after_prose_and_in_tables() {
+        let keys = super::citation_keys(
+            "政策規範である。佐野亘ほか（2021）は基準を示す。\n| 出典 | 内閣官房地域未来戦略本部事務局・内閣府地方創生推進室（2025、2026） |",
+        );
+        assert!(keys.contains("佐野亘:2021"), "{keys:?}");
+        assert!(
+            keys.contains("内閣官房地域未来戦略本部事務局:2025"),
+            "{keys:?}"
+        );
+    }
+
+    #[test]
+    fn word_xml_text_preserves_ampersands() {
+        let text = super::word_xml_text(
+            br#"<w:document xmlns:w="urn:test"><w:body><w:p><w:r><w:t>Operations &amp; Production</w:t></w:r></w:p></w:body></w:document>"#,
+        )
+        .expect("Word XML text");
+        assert_eq!(text.trim(), "Operations & Production");
     }
 
     #[test]
@@ -2130,6 +2546,136 @@ mod tests {
             duplicate_checks
                 .iter()
                 .any(|item| item.id == "note_disposition" && item.status == "fail")
+        );
+    }
+
+    #[test]
+    fn japanese_note_sections_are_matched_to_inline_references() {
+        let valid = source_view(
+            "本文の補足を注1）に示す。\n\n## ―――注―――\n\n注1）日本語注記の本文である。\n\n## ―――参考文献―――\n",
+            &[],
+        );
+        assert!(!valid.main_text.contains("日本語注記の本文"));
+        let decision = super::NoteDecision {
+            marker: "注１）".to_owned(),
+            disposition: "note".to_owned(),
+            text: "日本語注記の本文である。".to_owned(),
+        };
+        let mut checks = Vec::new();
+        audit_notes(&mut checks, &valid, std::slice::from_ref(&decision));
+        assert!(
+            checks.iter().all(|item| item.status == "pass"),
+            "{checks:#?}"
+        );
+
+        let unused = source_view(
+            "本文。\n\n## ―――注―――\n\n注1）日本語注記の本文である。\n",
+            &[],
+        );
+        let mut unused_checks = Vec::new();
+        audit_notes(&mut unused_checks, &unused, &[decision]);
+        assert!(
+            unused_checks
+                .iter()
+                .any(|item| item.id == "note_references" && item.status == "fail")
+        );
+    }
+
+    #[test]
+    fn ooxml_rejects_first_page_rule_changes() {
+        let dir = tempdir().expect("tempdir");
+        let template = dir.path().join("template.docx");
+        let docx = dir.path().join("submission.docx");
+        let layout = r#"<w:p><w:r><w:pict><v:line id="first-page-rule" style="width:10pt" from="0pt,1pt" to="100pt,1pt"/></w:pict></w:r></w:p><w:sectPr><w:type w:val="continuous"/><w:pgSz w:w="11906"/></w:sectPr>"#;
+        write_docx_with_layout(
+            &template,
+            "placeholder",
+            "<styles>fixed</styles>",
+            layout,
+            None,
+        );
+        write_docx_with_layout(&docx, "article", "<styles>fixed</styles>", layout, None);
+        let mut unchanged = Vec::new();
+        audit_ooxml(
+            &mut unchanged,
+            &template,
+            &docx,
+            &contract().docx_mutable_entries,
+        )
+        .expect("OOXML audit");
+        assert!(unchanged.iter().all(|item| item.status == "pass"));
+
+        write_docx_with_layout(
+            &docx,
+            "article",
+            "<styles>fixed</styles>",
+            &layout.replace("width:10pt", "width:20pt"),
+            None,
+        );
+        assert!(
+            !super::preserves_horizontal_vml_lines(
+                layout.as_bytes(),
+                layout.replace("width:10pt", "width:20pt").as_bytes(),
+            )
+            .expect("rule comparison")
+        );
+        let mut changed = Vec::new();
+        audit_ooxml(
+            &mut changed,
+            &template,
+            &docx,
+            &contract().docx_mutable_entries,
+        )
+        .expect("OOXML audit");
+        assert!(changed.iter().any(|item| item.status == "fail"));
+    }
+
+    #[test]
+    fn docx_layout_checks_caption_pairing_and_contract_order() {
+        let dir = tempdir().expect("tempdir");
+        let docx = dir.path().join("paper.docx");
+        let layout = r#"<w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>表-1　比較</w:t></w:r></w:p><w:p><w:r><w:drawing/></w:r></w:p><w:p><w:r><w:t>図-1　流れ</w:t></w:r></w:p><w:p><w:r><w:t>結論</w:t></w:r></w:p>"#;
+        write_docx_with_layout(
+            &docx,
+            "執政の創造性",
+            "<styles>fixed</styles>",
+            layout,
+            None,
+        );
+        let mut checks = Vec::new();
+        audit_docx_layout(
+            &mut checks,
+            &docx,
+            &[
+                "執政の創造性".to_owned(),
+                "表-1".to_owned(),
+                "図-1".to_owned(),
+                "結論".to_owned(),
+            ],
+        )
+        .expect("layout audit");
+        assert!(
+            checks.iter().all(|item| item.status == "pass"),
+            "{checks:#?}"
+        );
+
+        let broken = layout.replace(
+            "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>表-1　比較</w:t></w:r></w:p>",
+            "<w:p><w:r><w:t>表-1　比較</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>",
+        );
+        write_docx_with_layout(
+            &docx,
+            "執政の創造性",
+            "<styles>fixed</styles>",
+            &broken,
+            None,
+        );
+        let mut broken_checks = Vec::new();
+        audit_docx_layout(&mut broken_checks, &docx, &[]).expect("layout audit");
+        assert!(
+            broken_checks
+                .iter()
+                .any(|item| item.id == "docx_table_figure_placement" && item.status == "fail")
         );
     }
 }
