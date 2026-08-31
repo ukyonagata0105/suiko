@@ -112,7 +112,7 @@ suiko academic paper.md --contract academic-contract.json \
   --pdf submission.pdf --export-record delivery-record.json
 ```
 
-このレーンは、形式的なリサーチ・クエスチョンを置かない方針、用語の出典又は造語表示、防御的留保候補、本文引用と参考文献の同一書誌行にある著者・年、段落第一文と節間の共有対象、本文・注・不要の注分類を確認します。契約の論証順序、用語、第一文順、文体プロファイルは明示必須です。DOCXとPDFを片方でも指定した場合は、公式テンプレートと納品記録も必須になります。`delivery-record.json` にはMicrosoft WordでのPDF書き出し、PDF全頁を画像として目視した記録、Markdown/DOCX/PDFのSHA-256を記録します。JSONの`passed`は指定された全チェックの合格、`delivery_ready`は提出可能な成果物監査まで通った状態を示します。
+このレーンは、形式的なリサーチ・クエスチョンを置かない方針、用語の出典又は造語表示、防御的留保候補、本文引用と参考文献の著者・年の双方向照合、段落第一文と節間の共有対象、本文・注・不要の注分類を確認します。契約の論証順序、用語、第一文順、文体プロファイルは明示必須です。DOCXとPDFを片方でも指定した場合は、公式テンプレートと納品記録も必須になります。同期は本文・表・注・参考文献を双方向照合するため、旧文や余計な内容の残存も失敗になります。`delivery-record.json` のWord出力とPDF目視は自己申告であり、Suikoが実施事実を証明するものではありません。JSONの`passed`は指定された全チェックの合格、`delivery_ready`は提出可能な成果物監査まで通った状態を示します。
 
 契約の完全な項目と、最終PDFの目視確認を含む手順は[academic-delivery.md](skills/suiko/references/academic-delivery.md)を参照してください。
 

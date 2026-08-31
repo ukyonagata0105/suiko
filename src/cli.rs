@@ -686,8 +686,16 @@ fn print_terms_human(file: &str, report: &terms::TermsReport) {
 
 fn print_academic_human(report: &academic::AcademicReport) {
     println!(
-        "=== academic audit: {} ===\n",
+        "=== 原稿・指定成果物の監査: {} ===",
         if report.passed { "PASS" } else { "FAIL" }
+    );
+    println!(
+        "提出準備完了: {}\n",
+        if report.delivery_ready {
+            "YES（自己申告のWord出力・PDF目視記録を含む）"
+        } else {
+            "NO（原稿PASSだけでは提出準備完了ではありません）"
+        }
     );
     for item in &report.checks {
         println!("[{}] {}: {}", item.status, item.id, item.detail);

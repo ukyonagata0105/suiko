@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
 use crate::outline::{OutlineEntry, build_outline};
+use crate::text::{heading, mask_html_comments};
 use crate::{Error, read_source};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -31,13 +32,15 @@ pub struct AcademicContract {
     pub style_profile: StyleProfile,
     #[serde(default)]
     pub sync_omit_prefixes: Vec<String>,
+    /// 版型固有のヘッダー等、三成果物の同期から意図して除外する文字列。
+    #[serde(default)]
+    pub sync_omit_fragments: Vec<String>,
     #[serde(default = "default_mutable_entries")]
     pub docx_mutable_entries: Vec<String>,
 }
 
 fn default_mutable_entries() -> Vec<String> {
     vec![
-        "word/document.xml".to_owned(),
         "docProps/core.xml".to_owned(),
         "docProps/app.xml".to_owned(),
     ]
@@ -191,73 +194,212 @@ fn validate_contract(contract: &AcademicContract) -> Result<(), Error> {
 
 fn normalized(text: &str) -> String {
     text.chars()
-        .filter(|ch| !ch.is_whitespace())
+        .filter(|ch| !ch.is_whitespace() && !ch.is_control())
         .filter(|ch| !matches!(ch, '*' | '_' | '`'))
         .collect()
 }
 
-fn visible_paragraphs(source: &str, omit_prefixes: &[String]) -> Vec<String> {
-    let mut paragraphs = Vec::new();
-    let mut buffer = Vec::new();
-    let mut front_matter = false;
-    let mut fence: Option<char> = None;
-    let flush = |buffer: &mut Vec<String>, paragraphs: &mut Vec<String>| {
-        let text = buffer.join(" ").trim().to_owned();
-        buffer.clear();
-        let trimmed = text.trim_start_matches('#').trim();
-        if trimmed.chars().count() >= 8
-            && !trimmed.starts_with('|')
-            && !trimmed.starts_with("![")
-            && !trimmed.starts_with("[^")
-            && !omit_prefixes
-                .iter()
-                .any(|prefix| trimmed.starts_with(prefix))
-        {
-            paragraphs.push(normalized(trimmed));
+#[derive(Debug)]
+struct SourceView {
+    main_markdown: String,
+    main_text: String,
+    sync_text: String,
+    prose_paragraphs: Vec<String>,
+    references: Vec<String>,
+    notes: BTreeMap<String, String>,
+    note_references: BTreeMap<String, usize>,
+}
+
+fn is_reference_heading(title: &str) -> bool {
+    matches!(
+        title.trim().to_ascii_lowercase().as_str(),
+        "参考文献" | "引用文献" | "references" | "bibliography"
+    )
+}
+
+fn fence_marker(line: &str) -> Option<(char, usize)> {
+    let trimmed = line.trim_start();
+    let marker = trimmed
+        .chars()
+        .next()
+        .filter(|ch| matches!(ch, '`' | '~'))?;
+    let length = trimmed.chars().take_while(|ch| *ch == marker).count();
+    (length >= 3).then_some((marker, length))
+}
+
+fn is_table_separator(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.contains('|')
+        && trimmed
+            .chars()
+            .all(|ch| ch.is_whitespace() || matches!(ch, '|' | '-' | ':'))
+}
+
+fn plain_markdown(text: &str) -> String {
+    let image = Regex::new(r"!\[([^]]*)\]\([^)]+\)").expect("valid image regex");
+    let link = Regex::new(r"\[([^]]+)\]\([^)]+\)").expect("valid link regex");
+    let footnote = Regex::new(r"\[\^[^]]+\]").expect("valid footnote regex");
+    let html = Regex::new(r"</?[A-Za-z][^>]*>").expect("valid HTML regex");
+    text.lines()
+        .filter(|line| !is_table_separator(line))
+        .map(|line| heading(line).map_or_else(|| line.to_owned(), |(_, title)| title))
+        .map(|line| image.replace_all(&line, "$1").into_owned())
+        .map(|line| link.replace_all(&line, "$1").into_owned())
+        .map(|line| footnote.replace_all(&line, "").into_owned())
+        .map(|line| html.replace_all(&line, "").into_owned())
+        .map(|line| line.replace(['*', '_', '`', '|'], " "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn prose_blocks(markdown: &str) -> Vec<String> {
+    markdown
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|block| {
+            !block.is_empty()
+                && !block.starts_with('#')
+                && !block.lines().all(|line| line.trim_start().starts_with('|'))
+                && !block
+                    .lines()
+                    .all(|line| line.trim_start().starts_with("[^"))
+        })
+        .map(plain_markdown)
+        .filter(|block| !block.trim().is_empty())
+        .collect()
+}
+
+fn reference_entries(lines: &[String]) -> Vec<String> {
+    let entry = Regex::new(r"^\s*(?:[-*+]\s+|\d+[.)]\s+|\[[^]]+\]\s*)")
+        .expect("valid bibliography entry regex");
+    let mut entries = Vec::new();
+    let mut current = Vec::new();
+    for line in lines {
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                entries.push(plain_markdown(&current.join("\n")));
+                current.clear();
+            }
+            continue;
         }
-    };
-    for (index, line) in source.lines().enumerate() {
+        let starts_entry =
+            entry.is_match(line) || (!current.is_empty() && !line.starts_with(char::is_whitespace));
+        if starts_entry && !current.is_empty() {
+            entries.push(plain_markdown(&current.join("\n")));
+            current.clear();
+        }
+        current.push(line.to_owned());
+    }
+    if !current.is_empty() {
+        entries.push(plain_markdown(&current.join("\n")));
+    }
+    entries
+}
+
+fn source_view(source: &str, omit_prefixes: &[String]) -> SourceView {
+    let source = mask_html_comments(source);
+    let lines = source.lines().map(str::to_owned).collect::<Vec<_>>();
+    let note_definition = Regex::new(r"^\[\^([^]]+)\]:\s*(.*)$").expect("valid note regex");
+    let note_reference = Regex::new(r"\[\^([^]]+)\]").expect("valid note reference regex");
+    let mut main_lines = Vec::new();
+    let mut sync_lines = Vec::new();
+    let mut reference_lines = Vec::new();
+    let mut notes = BTreeMap::new();
+    let mut note_references = BTreeMap::new();
+    let mut front_matter = false;
+    let mut fence: Option<(char, usize)> = None;
+    let mut reference_level = None;
+    let mut index = 0;
+    while index < lines.len() {
+        let line = &lines[index];
         let trimmed = line.trim();
         if index == 0 && trimmed == "---" {
             front_matter = true;
+            index += 1;
             continue;
         }
         if front_matter {
             if trimmed == "---" {
                 front_matter = false;
             }
+            index += 1;
             continue;
         }
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            flush(&mut buffer, &mut paragraphs);
-            let marker = trimmed.chars().next().unwrap_or('`');
-            if fence == Some(marker) {
+        if let Some((open, length)) = fence {
+            if fence_marker(line)
+                .is_some_and(|(close, close_length)| close == open && close_length >= length)
+            {
                 fence = None;
-            } else if fence.is_none() {
-                fence = Some(marker);
             }
+            index += 1;
             continue;
         }
-        if fence.is_some() {
+        if let Some(marker) = fence_marker(line) {
+            fence = Some(marker);
+            index += 1;
             continue;
         }
-        if trimmed.is_empty() {
-            flush(&mut buffer, &mut paragraphs);
-        } else {
-            buffer.push(trimmed.to_owned());
+        if let Some((level, title)) = heading(line) {
+            if is_reference_heading(&title) {
+                reference_level = Some(level);
+                sync_lines.push(line.to_owned());
+                index += 1;
+                continue;
+            }
+            if reference_level.is_some_and(|current| level <= current) {
+                reference_level = None;
+            }
         }
+        if let Some(capture) = note_definition.captures(line) {
+            let marker = capture[1].to_owned();
+            let mut contents = vec![capture[2].to_owned()];
+            index += 1;
+            while index < lines.len()
+                && (lines[index].starts_with(' ') || lines[index].starts_with('\t'))
+            {
+                contents.push(lines[index].trim().to_owned());
+                index += 1;
+            }
+            let contents = contents.join(" ").trim().to_owned();
+            if !omit_prefixes
+                .iter()
+                .any(|prefix| contents.starts_with(prefix))
+            {
+                sync_lines.push(contents.clone());
+            }
+            notes.insert(marker, contents);
+            continue;
+        }
+        let omitted = omit_prefixes
+            .iter()
+            .any(|prefix| trimmed.starts_with(prefix));
+        if reference_level.is_some() {
+            if !omitted {
+                reference_lines.push(line.to_owned());
+                sync_lines.push(line.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if !omitted {
+            for capture in note_reference.captures_iter(line) {
+                *note_references.entry(capture[1].to_owned()).or_default() += 1;
+            }
+            main_lines.push(line.to_owned());
+            sync_lines.push(line.to_owned());
+        }
+        index += 1;
     }
-    flush(&mut buffer, &mut paragraphs);
-    paragraphs
-}
-
-fn prose_paragraphs(source: &str) -> Vec<String> {
-    source
-        .split("\n\n")
-        .map(str::trim)
-        .filter(|part| !part.is_empty() && !part.starts_with('#') && !part.starts_with('|'))
-        .map(str::to_owned)
-        .collect()
+    let main_markdown = main_lines.join("\n");
+    SourceView {
+        main_text: plain_markdown(&main_markdown),
+        sync_text: plain_markdown(&sync_lines.join("\n")),
+        prose_paragraphs: prose_blocks(&main_markdown),
+        references: reference_entries(&reference_lines),
+        notes,
+        note_references,
+        main_markdown,
+    }
 }
 
 fn sentences(text: &str) -> Vec<String> {
@@ -268,9 +410,10 @@ fn sentences(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn style_observations(source: &str, profile: &StyleProfile) -> StyleObservations {
-    let paragraphs = prose_paragraphs(source);
-    let sentence_list = sentences(source);
+fn style_observations(view: &SourceView, profile: &StyleProfile) -> StyleObservations {
+    let paragraphs = &view.prose_paragraphs;
+    let style_text = paragraphs.join("\n");
+    let sentence_list = sentences(&style_text);
     let mean = if sentence_list.is_empty() {
         0.0
     } else {
@@ -294,7 +437,7 @@ fn style_observations(source: &str, profile: &StyleProfile) -> StyleObservations
     let connective_counts = profile
         .connectives
         .iter()
-        .map(|word| (word.clone(), source.matches(word).count()))
+        .map(|word| (word.clone(), style_text.matches(word).count()))
         .collect();
     StyleObservations {
         sentence_length_mean: (mean * 100.0).round() / 100.0,
@@ -316,21 +459,10 @@ fn section_bounds(outline: &[OutlineEntry], heading: &str) -> Option<(usize, usi
     Some((start, end))
 }
 
-fn academic_outline(source: &str) -> Vec<OutlineEntry> {
-    let mut in_references = false;
-    build_outline(source)
+fn academic_outline(view: &SourceView) -> Vec<OutlineEntry> {
+    build_outline(&view.main_markdown)
         .into_iter()
-        .filter(|entry| {
-            if entry.kind == "heading"
-                && matches!(
-                    entry.text.as_str(),
-                    "参考文献" | "引用文献" | "References" | "Bibliography"
-                )
-            {
-                in_references = true;
-            }
-            !in_references && !(entry.kind == "lead" && entry.text.starts_with("[^"))
-        })
+        .filter(|entry| !(entry.kind == "lead" && entry.text.starts_with("[^")))
         .collect()
 }
 
@@ -421,12 +553,8 @@ fn audit_first_sentence_order(
 fn audit_proper_nouns(checks: &mut Vec<AcademicCheck>, source: &str, known: &[String]) {
     let citation = Regex::new(r"([A-Za-z一-龠々・]{2,30})[（(][12][0-9]{3}[a-z]?[）)]")
         .expect("valid citation regex");
-    let reference_start = source
-        .find("参考文献")
-        .or_else(|| source.find("References"));
-    let body = reference_start.map_or(source, |start| &source[..start]);
     let unknown = citation
-        .captures_iter(body)
+        .captures_iter(source)
         .map(|capture| capture[1].to_owned())
         .filter(|name| !known.iter().any(|known_name| known_name == name))
         .collect::<BTreeSet<_>>();
@@ -442,30 +570,79 @@ fn audit_proper_nouns(checks: &mut Vec<AcademicCheck>, source: &str, known: &[St
     }
 }
 
-fn audit_citations(checks: &mut Vec<AcademicCheck>, source: &str) {
-    let citation = Regex::new(r"([A-Za-z一-龠々・]{2,30})[（(]([12][0-9]{3})[a-z]?[）)]")
-        .expect("valid citation regex");
-    let reference_start = source
-        .find("参考文献")
-        .or_else(|| source.find("References"));
-    let body = reference_start.map_or(source, |start| &source[..start]);
-    let references = reference_start.map_or("", |start| &source[start..]);
-    let entries = references
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .collect::<Vec<_>>();
-    let mut missing = BTreeSet::new();
-    for capture in citation.captures_iter(body) {
-        let author = capture.get(1).map_or("", |item| item.as_str());
-        let year = capture.get(2).map_or("", |item| item.as_str());
-        if !entries
-            .iter()
-            .any(|entry| entry.contains(author) && entry.contains(year))
-        {
-            missing.insert(format!("{author}（{year}）"));
+fn normalized_author(author: &str) -> String {
+    let author = author
+        .rsplit(['。', '！', '？', '!', '?', '\n'])
+        .next()
+        .unwrap_or_default()
+        .replace("et al.", "")
+        .replace("et al", "")
+        .replace("ほか", "");
+    let author = author
+        .trim_start_matches(|ch: char| ch.is_ascii_digit() || matches!(ch, '.' | ')' | ']'))
+        .trim();
+    let primary = author
+        .split(['・', '&', ',', '，'])
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .next()
+        .unwrap_or_default();
+    primary
+        .chars()
+        .filter(|ch| ch.is_alphanumeric() || matches!(ch, '々' | 'ヶ' | 'ヵ'))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn citation_keys(source: &str) -> BTreeSet<String> {
+    let narrative = Regex::new(
+        r"(?P<author>[A-Za-z一-龠々ヶヵ・&.,\s]{2,80})\s*[（(]\s*(?P<year>[12][0-9]{3}[a-z]?)\s*[）)]",
+    )
+    .expect("valid narrative citation regex");
+    let parenthetical = Regex::new(
+        r"(?P<author>[A-Za-z一-龠々ヶヵ・&.\s]{2,80})\s*[,，]\s*(?P<year>[12][0-9]{3}[a-z]?)",
+    )
+    .expect("valid parenthetical citation regex");
+    narrative
+        .captures_iter(source)
+        .chain(parenthetical.captures_iter(source))
+        .filter_map(|capture| {
+            let author = normalized_author(capture.name("author")?.as_str());
+            let year = capture.name("year")?.as_str().to_ascii_lowercase();
+            (!author.is_empty()).then_some(format!("{author}:{year}"))
+        })
+        .collect()
+}
+
+fn reference_keys(entry: &str) -> Vec<String> {
+    let year = Regex::new(r"[（(]?([12][0-9]{3}[a-z]?)[）)]?").expect("valid reference year regex");
+    year.captures_iter(entry)
+        .filter_map(|capture| {
+            let full = capture.get(0)?;
+            let author = normalized_author(&entry[..full.start()]);
+            let year = capture.get(1)?.as_str().to_ascii_lowercase();
+            (!author.is_empty()).then_some(format!("{author}:{year}"))
+        })
+        .collect()
+}
+
+fn audit_citations(checks: &mut Vec<AcademicCheck>, view: &SourceView) {
+    let cited = citation_keys(&view.main_text);
+    let mut references = BTreeMap::<String, usize>::new();
+    for entry in &view.references {
+        for key in reference_keys(entry) {
+            *references.entry(key).or_default() += 1;
         }
     }
+    let referenced = references.keys().cloned().collect::<BTreeSet<_>>();
+    let missing = cited.difference(&referenced).cloned().collect::<Vec<_>>();
+    let uncited = referenced.difference(&cited).cloned().collect::<Vec<_>>();
+    let duplicate = references
+        .iter()
+        .filter(|(_, count)| **count > 1)
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
     add_check(
         checks,
         "citation_reference_match",
@@ -473,37 +650,57 @@ fn audit_citations(checks: &mut Vec<AcademicCheck>, source: &str) {
         if missing.is_empty() {
             "本文引用に対応する著者名・年が参考文献欄にあります".to_owned()
         } else {
-            format!(
-                "参考文献欄で対応を確認できません: {}",
-                missing.into_iter().collect::<Vec<_>>().join(", ")
-            )
+            format!("参考文献欄で対応を確認できません: {}", missing.join(", "))
+        },
+    );
+    add_check(
+        checks,
+        "uncited_references",
+        uncited.is_empty(),
+        if uncited.is_empty() {
+            "参考文献欄に未引用の著者・年はありません".to_owned()
+        } else {
+            format!("未引用の参考文献キー: {}", uncited.join(", "))
+        },
+    );
+    add_check(
+        checks,
+        "duplicate_references",
+        duplicate.is_empty(),
+        if duplicate.is_empty() {
+            "参考文献キーの重複はありません".to_owned()
+        } else {
+            format!("重複した参考文献キー: {}", duplicate.join(", "))
         },
     );
 }
 
-fn audit_notes(checks: &mut Vec<AcademicCheck>, source: &str, decisions: &[NoteDecision]) {
-    let note = Regex::new(r"(?m)^\[\^([^]]+)\]:\s*(.+)$").expect("valid note regex");
-    let definitions = note
-        .captures_iter(source)
-        .map(|capture| (capture[1].to_owned(), capture[2].to_owned()))
-        .collect::<BTreeMap<_, _>>();
-    let body = note.replace_all(source, "");
+fn audit_notes(checks: &mut Vec<AcademicCheck>, view: &SourceView, decisions: &[NoteDecision]) {
     for decision in decisions {
         let marker = decision
             .marker
             .trim_start_matches("[^")
             .trim_end_matches(']');
         let passed = match decision.disposition.as_str() {
-            "note" => definitions
-                .get(marker)
-                .is_some_and(|text| text.contains(&decision.text)),
+            "note" => view.notes.get(marker).is_some_and(|text| {
+                text.contains(&decision.text)
+                    && view.note_references.contains_key(marker)
+                    && !normalized(&view.main_text).contains(&normalized(text))
+            }),
             "body" => {
-                body.contains(&decision.text)
-                    && !definitions
+                view.main_text.contains(&decision.text)
+                    && !view
+                        .notes
                         .values()
                         .any(|text| text.contains(&decision.text))
             }
-            "drop" => !source.contains(&decision.text),
+            "drop" => {
+                !view.main_text.contains(&decision.text)
+                    && !view
+                        .notes
+                        .values()
+                        .any(|text| text.contains(&decision.text))
+            }
             _ => false,
         };
         add_check(
@@ -522,7 +719,8 @@ fn audit_notes(checks: &mut Vec<AcademicCheck>, source: &str, decisions: &[NoteD
                 .to_owned()
         })
         .collect::<BTreeSet<_>>();
-    let undecided = definitions
+    let undecided = view
+        .notes
         .keys()
         .filter(|marker| !decided.contains(*marker))
         .cloned()
@@ -535,6 +733,32 @@ fn audit_notes(checks: &mut Vec<AcademicCheck>, source: &str, decisions: &[NoteD
             "全注に本文・注・不要の判定があります".to_owned()
         } else {
             format!("判定のない注: {}", undecided.join(", "))
+        },
+    );
+    let undefined = view
+        .note_references
+        .keys()
+        .filter(|marker| !view.notes.contains_key(*marker))
+        .cloned()
+        .collect::<Vec<_>>();
+    let unused = view
+        .notes
+        .keys()
+        .filter(|marker| !view.note_references.contains_key(*marker))
+        .cloned()
+        .collect::<Vec<_>>();
+    add_check(
+        checks,
+        "note_references",
+        undefined.is_empty() && unused.is_empty(),
+        if undefined.is_empty() && unused.is_empty() {
+            "注参照と注定義は対応しています".to_owned()
+        } else {
+            format!(
+                "未定義参照: {}; 未使用定義: {}",
+                undefined.join(", "),
+                unused.join(", ")
+            )
         },
     );
 }
@@ -592,6 +816,20 @@ fn docx_text(path: &Path) -> Result<String, Error> {
     Ok(output)
 }
 
+fn protected_document_layout(xml: &[u8]) -> Result<Vec<String>, Error> {
+    let xml = std::str::from_utf8(xml).map_err(|error| {
+        Error::Academic(format!("word/document.xmlはUTF-8ではありません: {error}"))
+    })?;
+    let protected = Regex::new(
+        r#"(?s)<w:sectPr\b.*?</w:sectPr>|<w:sectPr\b[^>]*/>|<w:pPr\b.*?</w:pPr>|<w:pPr\b[^>]*/>|<w:rPr\b.*?</w:rPr>|<w:rPr\b[^>]*/>|<w:tblPr\b.*?</w:tblPr>|<w:tblPr\b[^>]*/>|<w:tblGrid\b.*?</w:tblGrid>|<w:tblGrid\b[^>]*/>|<w:tcPr\b.*?</w:tcPr>|<w:tcPr\b[^>]*/>|<w:drawing\b.*?</w:drawing>|<w:drawing\b[^>]*/>|<w:pict\b.*?</w:pict>|<w:pict\b[^>]*/>|<w:br\b[^>]*w:type="page"[^>]*/>|<w:lastRenderedPageBreak\s*/>|<w:(?:headerReference|footerReference)\b[^>]*/>"#,
+    )
+    .expect("valid OOXML layout regex");
+    Ok(protected
+        .find_iter(xml)
+        .map(|item| normalized(item.as_str()))
+        .collect())
+}
+
 fn mutable(name: &str, rules: &[String]) -> bool {
     rules.iter().any(|rule| {
         rule.strip_suffix('*')
@@ -612,17 +850,34 @@ fn audit_ooxml(
         .chain(after.keys())
         .collect::<BTreeSet<_>>()
         .into_iter()
-        .filter(|name| !mutable(name, mutable_entries) && before.get(*name) != after.get(*name))
+        .filter(|name| {
+            name.as_str() != "word/document.xml"
+                && !mutable(name, mutable_entries)
+                && before.get(*name) != after.get(*name)
+        })
         .cloned()
         .collect::<Vec<_>>();
+    let before_layout = before
+        .get("word/document.xml")
+        .ok_or_else(|| Error::Academic("テンプレートにword/document.xmlがありません".to_owned()))
+        .and_then(|xml| protected_document_layout(xml))?;
+    let after_layout = after
+        .get("word/document.xml")
+        .ok_or_else(|| Error::Academic("DOCXにword/document.xmlがありません".to_owned()))
+        .and_then(|xml| protected_document_layout(xml))?;
+    let layout_changed = before_layout != after_layout;
     add_check(
         checks,
         "ooxml_invariants",
-        changed.is_empty(),
-        if changed.is_empty() {
-            "許可していないテンプレートOOXMLは不変です".to_owned()
+        changed.is_empty() && !layout_changed,
+        if changed.is_empty() && !layout_changed {
+            "許可していないテンプレートOOXMLと本文レイアウトは不変です".to_owned()
         } else {
-            format!("許可なく変わったOOXML: {}", changed.join(", "))
+            format!(
+                "許可なく変わったOOXML: {}; document.xmlレイアウト変更: {}",
+                changed.join(", "),
+                if layout_changed { "あり" } else { "なし" }
+            )
         },
     );
     Ok(())
@@ -647,15 +902,18 @@ fn audit_export_record(
     let record: ExportRecord = serde_json::from_str(&read_source(record_path)?)?;
     add_check(
         checks,
-        "word_exporter",
+        "word_exporter_declaration",
         record.exporter == "Microsoft Word",
-        format!("記録されたexporter: {}", record.exporter),
+        format!(
+            "納品記録の自己申告exporter: {}（SuikoはWord出力自体を実証しません）",
+            record.exporter
+        ),
     );
     add_check(
         checks,
-        "pdf_visual_review",
+        "pdf_visual_review_declaration",
         record.pdf_visual_reviewed,
-        "PDF全頁を画像として目視確認した記録を確認",
+        "PDF全頁を画像として目視確認した自己申告を確認（実施事実は機械検証しません）",
     );
     let source_ok = file_sha256(paths.source)? == record.source_sha256;
     let docx_ok = paths
@@ -673,46 +931,52 @@ fn audit_export_record(
     Ok(())
 }
 
+fn sync_normalized(text: &str, omitted_fragments: &[String]) -> String {
+    let mut text = text.to_owned();
+    for fragment in omitted_fragments {
+        text = text.replace(fragment, "");
+    }
+    normalized(&text)
+}
+
 fn audit_sync(
     checks: &mut Vec<AcademicCheck>,
-    source: &str,
+    view: &SourceView,
     contract: &AcademicContract,
     paths: &ArtifactPaths<'_>,
 ) -> Result<(), Error> {
-    let paragraphs = visible_paragraphs(source, &contract.sync_omit_prefixes);
+    let source = sync_normalized(&view.sync_text, &contract.sync_omit_fragments);
     if let Some(docx) = paths.docx {
-        let text = normalized(&docx_text(docx)?);
-        let missing = paragraphs
-            .iter()
-            .filter(|paragraph| !text.contains(paragraph.as_str()))
-            .count();
+        let text = sync_normalized(&docx_text(docx)?, &contract.sync_omit_fragments);
         add_check(
             checks,
             "markdown_docx_sync",
-            missing == 0,
+            source == text,
             format!(
-                "{}段落中、DOCXで確認できない段落: {}",
-                paragraphs.len(),
-                missing
+                "MarkdownとDOCXの本文・表・注・参考文献を双方向照合: {}",
+                if source == text {
+                    "一致"
+                } else {
+                    "不一致"
+                }
             ),
         );
     }
     if let Some(pdf) = paths.pdf {
         let extracted = pdf_extract::extract_text(pdf)
             .map_err(|error| Error::Academic(format!("PDF本文を抽出できません: {error}")))?;
-        let text = normalized(&extracted);
-        let missing = paragraphs
-            .iter()
-            .filter(|paragraph| !text.contains(paragraph.as_str()))
-            .count();
+        let text = sync_normalized(&extracted, &contract.sync_omit_fragments);
         add_check(
             checks,
             "markdown_pdf_sync",
-            missing == 0,
+            source == text,
             format!(
-                "{}段落中、PDFで確認できない段落: {}",
-                paragraphs.len(),
-                missing
+                "MarkdownとPDFの本文・表・注・参考文献を双方向照合: {}",
+                if source == text {
+                    "一致"
+                } else {
+                    "不一致"
+                }
             ),
         );
     }
@@ -725,17 +989,19 @@ pub fn audit(
     paths: &ArtifactPaths<'_>,
 ) -> Result<AcademicReport, Error> {
     validate_contract(contract)?;
+    let view = source_view(source, &contract.sync_omit_prefixes);
+    let main = view.main_text.as_str();
     let mut checks = Vec::new();
     add_check(
         &mut checks,
         "central_claim",
-        source.contains(&contract.central_claim),
+        main.contains(&contract.central_claim),
         "中心命題を本文で確認",
     );
     add_check(
         &mut checks,
         "explanandum",
-        source.contains(&contract.explanandum),
+        main.contains(&contract.explanandum),
         "説明対象を本文で確認",
     );
 
@@ -744,14 +1010,14 @@ pub fn audit(
     add_check(
         &mut checks,
         "research_question_policy",
-        contract.allow_formal_research_question || !rq.is_match(source),
+        contract.allow_formal_research_question || !rq.is_match(main),
         "形式的なリサーチクエスチョンの扱いを確認",
     );
 
     let mut last = 0;
     let mut order_ok = true;
     for item in &contract.required_order {
-        if let Some(offset) = source[last..].find(item) {
+        if let Some(offset) = main[last..].find(item) {
             last += offset + item.len();
         } else {
             order_ok = false;
@@ -766,19 +1032,19 @@ pub fn audit(
     );
 
     for term in &contract.terms {
-        let found = source.find(&term.term);
+        let found = main.find(&term.term);
         let passed = found.is_some_and(|offset| {
-            let start = source[..offset]
+            let start = main[..offset]
                 .char_indices()
                 .rev()
                 .nth(80)
                 .map_or(0, |(index, _)| index);
             let term_end = offset + term.term.len();
-            let end = source[term_end..]
+            let end = main[term_end..]
                 .char_indices()
                 .nth(80)
-                .map_or(source.len(), |(index, _)| term_end + index);
-            let context = &source[start..end];
+                .map_or(main.len(), |(index, _)| term_end + index);
+            let context = &main[start..end];
             match term.status.as_str() {
                 "coined" => context.contains("造語"),
                 "established" | "source-specific" => term
@@ -805,7 +1071,7 @@ pub fn audit(
         .collect::<BTreeSet<_>>();
     let quoted = Regex::new(r"[「《]([^」》]{2,24})[」》]").expect("valid label regex");
     let unregistered = quoted
-        .captures_iter(source)
+        .captures_iter(main)
         .map(|capture| capture[1].to_owned())
         .filter(|term| !registered.contains(term.as_str()))
         .collect::<BTreeSet<_>>();
@@ -825,7 +1091,7 @@ pub fn audit(
     )
     .expect("valid caveat regex");
     let caveats = caveat
-        .find_iter(source)
+        .find_iter(main)
         .map(|item| item.as_str())
         .collect::<Vec<_>>();
     if contract.reject_defensive_caveats {
@@ -847,7 +1113,7 @@ pub fn audit(
         );
     }
 
-    let outline = academic_outline(source);
+    let outline = academic_outline(&view);
     let first_sentences = outline
         .iter()
         .filter(|entry| matches!(entry.kind.as_str(), "heading" | "lead"))
@@ -871,12 +1137,12 @@ pub fn audit(
     );
     audit_bridges(&mut checks, &outline, &contract.section_bridges);
     audit_first_sentence_order(&mut checks, &outline, &contract.first_sentence_order);
-    audit_citations(&mut checks, source);
-    audit_proper_nouns(&mut checks, source, &contract.proper_nouns);
-    audit_notes(&mut checks, source, &contract.note_decisions);
+    audit_citations(&mut checks, &view);
+    audit_proper_nouns(&mut checks, main, &contract.proper_nouns);
+    audit_notes(&mut checks, &view, &contract.note_decisions);
 
     let profile = &contract.style_profile;
-    let style = style_observations(source, profile);
+    let style = style_observations(&view, profile);
     add_check(
         &mut checks,
         "style_sentence_length",
@@ -894,7 +1160,8 @@ pub fn audit(
         ),
     );
     if profile.discovery_marker_at_paragraph_end {
-        let misplaced = prose_paragraphs(source)
+        let misplaced = view
+            .prose_paragraphs
             .iter()
             .filter(|paragraph| {
                 paragraph.contains("とわかる") && !paragraph.trim_end().ends_with("とわかる。")
@@ -929,7 +1196,7 @@ pub fn audit(
             "原稿監査のみ完了。提出前にはWord DOCX、PDF、テンプレート、目視確認済み納品記録を指定します",
         );
     }
-    audit_sync(&mut checks, source, contract, paths)?;
+    audit_sync(&mut checks, &view, contract, paths)?;
     if let (Some(template), Some(docx)) = (paths.template, paths.docx) {
         audit_ooxml(&mut checks, template, docx, &contract.docx_mutable_entries)?;
     }
@@ -941,7 +1208,7 @@ pub fn audit(
         && delivery_paths_complete
         && checks
             .iter()
-            .any(|item| item.id == "pdf_visual_review" && item.status == "pass");
+            .any(|item| item.id == "pdf_visual_review_declaration" && item.status == "pass");
     Ok(AcademicReport {
         passed,
         delivery_ready,
@@ -960,9 +1227,22 @@ mod tests {
     use zip::ZipWriter;
     use zip::write::SimpleFileOptions;
 
-    use super::{AcademicContract, ArtifactPaths, audit, file_sha256};
+    use super::{
+        AcademicContract, ArtifactPaths, audit, audit_citations, audit_notes, audit_sync,
+        file_sha256, source_view, style_observations,
+    };
 
     fn write_docx(path: &std::path::Path, text: &str, style: &str, extra: Option<(&str, &str)>) {
+        write_docx_with_layout(path, text, style, "", extra);
+    }
+
+    fn write_docx_with_layout(
+        path: &std::path::Path,
+        text: &str,
+        style: &str,
+        layout: &str,
+        extra: Option<(&str, &str)>,
+    ) {
         let file = File::create(path).expect("create docx");
         let mut zip = ZipWriter::new(file);
         let options = SimpleFileOptions::default();
@@ -975,7 +1255,7 @@ mod tests {
             .expect("document");
         zip.write_all(
             format!(
-                r#"<w:document xmlns:w="urn:test"><w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>"#
+                r#"<w:document xmlns:w="urn:test"><w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p>{layout}</w:body></w:document>"#
             )
             .as_bytes(),
         )
@@ -989,6 +1269,10 @@ mod tests {
     }
 
     fn write_pdf(path: &std::path::Path, text: &str) {
+        let text = text
+            .replace('\\', "\\\\")
+            .replace('(', "\\(")
+            .replace(')', "\\)");
         let content = format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET");
         let objects = [
             "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
@@ -1112,7 +1396,7 @@ mod tests {
             unreviewed
                 .checks
                 .iter()
-                .any(|item| item.id == "pdf_visual_review" && item.status == "fail")
+                .any(|item| item.id == "pdf_visual_review_declaration" && item.status == "fail")
         );
 
         let partial = audit(
@@ -1184,6 +1468,261 @@ mod tests {
                 .checks
                 .iter()
                 .any(|item| item.id == "ooxml_invariants" && item.status == "fail")
+        );
+    }
+
+    #[test]
+    fn document_layout_changes_fail_while_text_replacement_passes() {
+        let dir = tempdir().expect("tempdir");
+        let source = dir.path().join("paper.md");
+        let template = dir.path().join("template.docx");
+        let docx = dir.path().join("paper.docx");
+        let layout =
+            r#"<w:sectPr><w:pgMar w:left="100"/><w:cols w:num="2"/><w:pgBorders/></w:sectPr>"#;
+        std::fs::write(&source, "# Introduction\n\nPolicy body has evidence.\n").expect("source");
+        write_docx_with_layout(
+            &template,
+            "placeholder",
+            "<styles>fixed</styles>",
+            layout,
+            None,
+        );
+        write_docx_with_layout(
+            &docx,
+            "Introduction Policy body has evidence.",
+            "<styles>fixed</styles>",
+            layout,
+            None,
+        );
+        let unchanged = audit(
+            &std::fs::read_to_string(&source).expect("read source"),
+            &contract(),
+            &ArtifactPaths {
+                source: &source,
+                docx: Some(&docx),
+                pdf: None,
+                template: Some(&template),
+                export_record: None,
+            },
+        )
+        .expect("audit");
+        assert!(
+            unchanged
+                .checks
+                .iter()
+                .any(|item| item.id == "ooxml_invariants" && item.status == "pass")
+        );
+
+        write_docx_with_layout(
+            &docx,
+            "Introduction Policy body has evidence.",
+            "<styles>fixed</styles>",
+            r#"<w:sectPr><w:pgMar w:left="200"/><w:cols w:num="2"/><w:pgBorders/></w:sectPr>"#,
+            None,
+        );
+        let changed = audit(
+            &std::fs::read_to_string(&source).expect("read source"),
+            &contract(),
+            &ArtifactPaths {
+                source: &source,
+                docx: Some(&docx),
+                pdf: None,
+                template: Some(&template),
+                export_record: None,
+            },
+        )
+        .expect("audit");
+        assert!(
+            changed
+                .checks
+                .iter()
+                .any(|item| item.id == "ooxml_invariants" && item.status == "fail")
+        );
+    }
+
+    #[test]
+    fn sync_is_bidirectional_and_normalizes_links_tables_notes_and_references() {
+        let dir = tempdir().expect("tempdir");
+        let source_path = dir.path().join("paper.md");
+        let docx = dir.path().join("paper.docx");
+        let pdf = dir.path().join("paper.pdf");
+        let source = "# Paper\n\nBody [link](https://example.com).[^1]\n\n| A | B |\n| - | - |\n| one | two |\n\n[^1]: Note text\n  continues here.\n\n# References\n\n1) Sano 2024a.\n";
+        std::fs::write(&source_path, source).expect("source");
+        let view = source_view(source, &[]);
+        write_docx(&docx, &view.sync_text, "<styles>fixed</styles>", None);
+        write_pdf(&pdf, &view.sync_text);
+        let extracted = pdf_extract::extract_text(&pdf).expect("extract PDF");
+        assert_eq!(
+            super::normalized(&view.sync_text),
+            super::normalized(&extracted),
+            "PDF text extraction must preserve the fixture"
+        );
+        let mut checks = Vec::new();
+        audit_sync(
+            &mut checks,
+            &view,
+            &contract(),
+            &ArtifactPaths {
+                source: &source_path,
+                docx: Some(&docx),
+                pdf: Some(&pdf),
+                template: None,
+                export_record: None,
+            },
+        )
+        .expect("sync");
+        assert!(
+            checks.iter().all(|item| item.status == "pass"),
+            "{checks:#?}"
+        );
+
+        write_docx(
+            &docx,
+            &format!("{} Old duplicate paragraph.", view.sync_text),
+            "<styles>fixed</styles>",
+            None,
+        );
+        write_pdf(&pdf, &format!("{} Old PDF paragraph.", view.sync_text));
+        let mut mismatched = Vec::new();
+        audit_sync(
+            &mut mismatched,
+            &view,
+            &contract(),
+            &ArtifactPaths {
+                source: &source_path,
+                docx: Some(&docx),
+                pdf: Some(&pdf),
+                template: None,
+                export_record: None,
+            },
+        )
+        .expect("sync");
+        assert!(mismatched.iter().all(|item| item.status == "fail"));
+    }
+
+    #[test]
+    fn citations_are_heading_scoped_bidirectional_and_detect_duplicates() {
+        let good = source_view(
+            "本文では参考文献を整理する。Sano & Tanaka (2024a) と 佐野・田中（2024b）を使う。\n\n# References\n\nSano, Tanaka (2024a).\n佐野・田中（2024b）.\n",
+            &[],
+        );
+        let mut checks = Vec::new();
+        audit_citations(&mut checks, &good);
+        assert!(
+            checks.iter().all(|item| item.status == "pass"),
+            "{checks:#?}"
+        );
+
+        let bad = source_view(
+            "Sano (2024a) を使う。\n\n# References\n\n1) Sano (2024b).\n2) Other (2024a).\n3) Other (2024a).\n",
+            &[],
+        );
+        let mut checks = Vec::new();
+        audit_citations(&mut checks, &bad);
+        assert!(
+            checks
+                .iter()
+                .any(|item| item.id == "citation_reference_match" && item.status == "fail")
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|item| item.id == "uncited_references" && item.status == "fail")
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|item| item.id == "duplicate_references" && item.status == "fail")
+        );
+    }
+
+    #[test]
+    fn body_checks_notes_and_style_exclude_markdown_outside_the_body() {
+        let source = "---\nclaim: Policy body has evidence.\n---\n<!-- Policy -->\n```text\nPolicy\n```\n\n本文。[^missing]\n\n[^1]: Note text\n  continues here.\n\n# References\n\n1) Long Reference Sentence That Must Not Change Style Measurements 2024.\n";
+        let view = source_view(source, &[]);
+        assert!(!view.main_text.contains("Policy"));
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("paper.md");
+        std::fs::write(&path, source).expect("source");
+        let report = audit(
+            source,
+            &contract(),
+            &ArtifactPaths {
+                source: &path,
+                docx: None,
+                pdf: None,
+                template: None,
+                export_record: None,
+            },
+        )
+        .expect("audit");
+        for id in [
+            "central_claim",
+            "explanandum",
+            "required_order",
+            "term_provenance",
+        ] {
+            assert!(
+                report
+                    .checks
+                    .iter()
+                    .any(|item| item.id == id && item.status == "fail"),
+                "{id} must not pass from front matter, comments, code, notes, or references"
+            );
+        }
+        let style = style_observations(&view, &contract().style_profile);
+        let baseline_style =
+            style_observations(&source_view("本文。", &[]), &contract().style_profile);
+        assert_eq!(style.paragraph_count, 1);
+        assert_eq!(style.sentence_length_mean, 3.0);
+        assert_eq!(
+            style.sentence_length_mean,
+            baseline_style.sentence_length_mean
+        );
+        let mut note_checks = Vec::new();
+        audit_notes(
+            &mut note_checks,
+            &view,
+            &[super::NoteDecision {
+                marker: "[^1]".to_owned(),
+                disposition: "note".to_owned(),
+                text: "Note text continues here.".to_owned(),
+            }],
+        );
+        assert!(
+            note_checks
+                .iter()
+                .any(|item| item.id == "note_disposition" && item.status == "fail")
+        );
+        assert!(
+            note_checks
+                .iter()
+                .any(|item| item.id == "note_references" && item.status == "fail")
+        );
+
+        let valid = source_view(
+            "本文の補足[^1]。\n\n[^1]: Note text\n  continues here.\n",
+            &[],
+        );
+        let decision = super::NoteDecision {
+            marker: "[^1]".to_owned(),
+            disposition: "note".to_owned(),
+            text: "Note text continues here.".to_owned(),
+        };
+        let mut valid_checks = Vec::new();
+        audit_notes(&mut valid_checks, &valid, std::slice::from_ref(&decision));
+        assert!(valid_checks.iter().all(|item| item.status == "pass"));
+
+        let duplicate = source_view(
+            "Note text continues here.[^1]\n\n[^1]: Note text\n  continues here.\n",
+            &[],
+        );
+        let mut duplicate_checks = Vec::new();
+        audit_notes(&mut duplicate_checks, &duplicate, &[decision]);
+        assert!(
+            duplicate_checks
+                .iter()
+                .any(|item| item.id == "note_disposition" && item.status == "fail")
         );
     }
 }

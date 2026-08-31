@@ -29,17 +29,17 @@
 
 引用段落は著者名ではなく本文の主張から始め、出典をその根拠として使う。各中心引用では、出典の対象と射程、方法又は論理操作、具体的結果、原稿で担う役割を回収する。理論をつなぐときは、語の近さでなく、各理論が説明する対象、媒介、出力を区別する。
 
-本文引用、参考文献、図表出典、固有名詞を相互照合する。確認できない文献を補わない。注は、資料来歴、概念系譜、適用方法など本文の流れを止める補足だけに使う。論証を支える説明は本文へ置く。重複、留保、言い訳は削除する。
+本文引用と参考文献はMarkdown見出しで欄を分け、正規化した主著者・年（`2024a`/`2024b`を区別）を双方向照合する。未引用文献と同じ著者・年キーの重複を解消する。確認できない文献を補わない。注は、資料来歴、概念系譜、適用方法など本文の流れを止める補足だけに使う。論証を支える説明は本文へ置く。重複、留保、言い訳は削除する。
 
-各注を`body`、`note`、`drop`へ分類し、その判断を契約へ記録する。分類は人が行う。Suikoは、注の未分類、置き場所、本文との重複を検査する。
+各注を`body`、`note`、`drop`へ分類し、その判断を契約へ記録する。分類は人が行う。Suikoは、注の未分類、本文の注番号と定義の対応、未使用定義、複数行注、本文との重複を検査する。
 
 ## 提出用DOCXとPDFを納品する
 
-学会テンプレートを設計権威とする。白紙DOCXを再構築せず、公式テンプレートのOOXMLへ本文を反映する。第一頁の罫線、余白、段組、フォント、表・図、注、参考文献を保つ。
+学会テンプレートを設計権威とする。白紙DOCXを再構築せず、公式テンプレートのOOXMLへ本文を反映する。Suikoは本文テキストの差し替えを許す一方、`word/document.xml`の節設定、段落設定、余白、段組、改ページ、罫線、表セル設定、図配置、ヘッダー／フッター参照の変更を失敗として扱う。第一頁の罫線、余白、段組、フォント、表・図、注、参考文献を保つ。
 
 最終PDFはMicrosoft Wordから出力する。LibreOfficeを提出用出力に使わない。出力後は、全頁を画像として目視し、頁数、罫線、段組、表図、注、参考文献、欠け、重なり、欄外へのはみ出しを確認する。
 
-完成はファイル取得ではない。Markdown、DOCX、PDF、監査契約、テストが同期している状態を指す。次のコマンドを実行し、契約違反を解消又は理由付きで判定する。
+完成はファイル取得ではない。Markdown、DOCX、PDF、監査契約、テストが同期している状態を指す。同期はMarkdownリンク記法・脚注番号・表の罫線を除去した本文、表、注、参考文献の正規化テキストを**双方向**に照合するため、成果物に残った旧文・重複文・余計な参考文献も失敗になる。`sync_omit_prefixes`はMarkdown側の意図的な除外ブロック、`sync_omit_fragments`は三成果物から同じ文字列を除く場合だけに使い、版型固有のヘッダー等も後者へ明示する。次のコマンドを実行し、契約違反を解消又は理由付きで判定する。
 
 ```sh
 suiko academic paper.md --contract academic-contract.json \
@@ -47,7 +47,7 @@ suiko academic paper.md --contract academic-contract.json \
   --pdf submission.pdf --export-record delivery-record.json --json
 ```
 
-`delivery-record.json`には`exporter: "Microsoft Word"`、`pdf_visual_reviewed: true`、Markdown/DOCX/PDFのSHA-256を記録する。`academic`のJSONで`passed: true`は指定された全チェックの合格である。提出完了にはDOCX、PDF、テンプレート、納品記録をそろえたうえで、`delivery_ready: true`を確認する。機械検証が通っても、PDF全頁の目視確認を省略しない。
+`delivery-record.json`には`exporter: "Microsoft Word"`、`pdf_visual_reviewed: true`、Markdown/DOCX/PDFのSHA-256を記録する。前二者は納品者の**自己申告**であり、SuikoはWordから出力した事実や目視の実施事実を機械的に実証しない。`academic`のJSONで`passed: true`は指定された全チェックの合格である。提出完了にはDOCX、PDF、テンプレート、納品記録をそろえたうえで、`delivery_ready: true`を確認する。機械検証が通っても、PDF全頁の目視確認を省略しない。
 
 ```json
 {
@@ -85,7 +85,9 @@ suiko academic paper.md --contract academic-contract.json \
     "sentence_length_mean_min": 15.0,
     "sentence_length_mean_max": 80.0,
     "citation_led_paragraph_ratio_max": 0.5
-  }
+  },
+  "sync_omit_prefixes": ["版型固有のヘッダー"],
+  "sync_omit_fragments": ["ページ番号"]
 }
 ```
 

@@ -35,6 +35,19 @@ fn academic_contract_accepts_a_grounded_manuscript() {
             .iter()
             .all(|item| !item["text"].as_str().expect("text").starts_with("[^"))
     );
+    let human = cargo_bin_cmd!("suiko")
+        .args([
+            "academic",
+            "tests/fixtures/academic-good.md",
+            "--contract",
+            "tests/fixtures/academic-contract.json",
+        ])
+        .output()
+        .expect("run human academic audit");
+    assert!(human.status.success());
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.contains("原稿・指定成果物の監査: PASS"));
+    assert!(stdout.contains("提出準備完了: NO"));
 }
 
 #[test]
@@ -53,19 +66,6 @@ fn academic_contract_rejects_rq_caveats_and_missing_bridges() {
     assert!(failed.contains(&"defensive_caveats"));
     assert!(failed.contains(&"section_bridge"));
     assert!(failed.contains(&"citation_reference_match"));
-    assert!(
-        report["checks"]
-            .as_array()
-            .expect("checks")
-            .iter()
-            .any(|item| {
-                item["id"] == "citation_reference_match"
-                    && item["detail"]
-                        .as_str()
-                        .expect("detail")
-                        .contains("研究者A（2024）")
-            })
-    );
 }
 
 #[test]
