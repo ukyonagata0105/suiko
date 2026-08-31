@@ -93,14 +93,15 @@ fn double_negative_distinguishes_relative_clauses_from_same_predicate() {
 }
 
 #[test]
-fn help_describes_the_three_analysis_commands() {
+fn help_describes_the_analysis_commands() {
     cargo_bin_cmd!("suiko")
         .arg("--help")
         .assert()
         .success()
         .stdout(predicate::str::contains("lint"))
         .stdout(predicate::str::contains("outline"))
-        .stdout(predicate::str::contains("terms"));
+        .stdout(predicate::str::contains("terms"))
+        .stdout(predicate::str::contains("academic"));
 }
 
 #[test]

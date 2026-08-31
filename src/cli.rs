@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lint::{Finding, LintStats};
 use crate::morphology::Morphology;
-use crate::{Error, lint, outline, read_source, terms};
+use crate::{Error, academic, lint, outline, read_source, terms};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -29,6 +29,8 @@ enum Command {
     Outline(FileArgs),
     /// 専門用語候補と初出時の説明手掛かりを抽出する
     Terms(TermsArgs),
+    /// 中心命題、論証順序、用語、引用、注、Word/PDF納品を監査契約に照らして検証する
+    Academic(AcademicArgs),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, ValueEnum)]
@@ -70,6 +72,30 @@ struct TermsArgs {
     /// 複数ファイルの用語を集計し、表記揺れを一覧化する（ファイルは書き換えない）
     #[arg(long)]
     audit: bool,
+}
+
+#[derive(Debug, Args)]
+struct AcademicArgs {
+    /// 監査するMarkdown原稿
+    source: PathBuf,
+    /// 中心命題、説明対象、用語来歴、章間接続、注分類を記したJSON契約
+    #[arg(long)]
+    contract: PathBuf,
+    /// 同期とOOXML不変条件を確認するDOCX
+    #[arg(long)]
+    docx: Option<PathBuf>,
+    /// Microsoft Wordから書き出した最終PDF
+    #[arg(long)]
+    pdf: Option<PathBuf>,
+    /// 成果物の設計権威となる公式DOCXテンプレート
+    #[arg(long, requires = "docx")]
+    template: Option<PathBuf>,
+    /// Word出力、PDF全頁目視、三成果物のSHA-256を記録したJSON
+    #[arg(long, requires_all = ["docx", "pdf"])]
+    export_record: Option<PathBuf>,
+    /// 機械可読なJSONで出力する
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -658,6 +684,20 @@ fn print_terms_human(file: &str, report: &terms::TermsReport) {
     }
 }
 
+fn print_academic_human(report: &academic::AcademicReport) {
+    println!(
+        "=== academic audit: {} ===\n",
+        if report.passed { "PASS" } else { "FAIL" }
+    );
+    for item in &report.checks {
+        println!("[{}] {}: {}", item.status, item.id, item.detail);
+    }
+    println!("\n=== 段落第一文と見出し ===\n");
+    for entry in &report.first_sentences {
+        println!("L{} {}: {}", entry.line, entry.kind, entry.text);
+    }
+}
+
 fn validate_inputs(files: &[String]) -> Result<(), Error> {
     if files.len() > 1 && files.iter().any(|file| file == "-") {
         return Err(Error::InvalidArguments(
@@ -880,6 +920,29 @@ fn execute(cli: Cli) -> Result<ExitCode, Error> {
                     print_terms_human(file, &report);
                 }
             }
+        }
+        Command::Academic(args) => {
+            let source = read_source(&args.source)?;
+            let contract =
+                serde_json::from_str::<academic::AcademicContract>(&read_source(&args.contract)?)?;
+            let paths = academic::ArtifactPaths {
+                source: &args.source,
+                docx: args.docx.as_deref(),
+                pdf: args.pdf.as_deref(),
+                template: args.template.as_deref(),
+                export_record: args.export_record.as_deref(),
+            };
+            let report = academic::audit(&source, &contract, &paths)?;
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print_academic_human(&report);
+            }
+            return Ok(if report.passed {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(2)
+            });
         }
     }
     Ok(ExitCode::SUCCESS)

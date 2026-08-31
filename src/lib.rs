@@ -1,3 +1,4 @@
+pub mod academic;
 pub mod cli;
 #[cfg(feature = "evaluation")]
 pub mod evaluation;
@@ -31,6 +32,8 @@ pub enum Error {
     Config { path: String, message: String },
     #[error("エラー: {0}")]
     InvalidArguments(String),
+    #[error("エラー: 学術監査に失敗しました: {0}")]
+    Academic(String),
 }
 
 pub fn read_source(path: &Path) -> Result<String, Error> {
