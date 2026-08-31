@@ -210,9 +210,24 @@ struct SourceView {
     note_references: BTreeMap<String, usize>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct SyncInventory {
+    blocks: BTreeMap<String, usize>,
+    characters: BTreeMap<char, usize>,
+    character_count: usize,
+    duplicate_blocks: usize,
+}
+
 fn is_reference_heading(title: &str) -> bool {
+    let title = title.trim_matches(|ch: char| {
+        ch.is_whitespace()
+            || matches!(
+                ch,
+                '-' | '―' | '—' | '–' | '━' | 'ー' | '_' | '=' | '~' | '＊' | '*' | '・'
+            )
+    });
     matches!(
-        title.trim().to_ascii_lowercase().as_str(),
+        title.to_ascii_lowercase().as_str(),
         "参考文献" | "引用文献" | "references" | "bibliography"
     )
 }
@@ -270,7 +285,7 @@ fn prose_blocks(markdown: &str) -> Vec<String> {
 }
 
 fn reference_entries(lines: &[String]) -> Vec<String> {
-    let entry = Regex::new(r"^\s*(?:[-*+]\s+|\d+[.)]\s+|\[[^]]+\]\s*)")
+    let entry = Regex::new(r"^\s*(?:[-*+]\s+|[0-9０-９]+[.)）．]\s*|[\[［][0-9０-９]+[\]］]\s*)")
         .expect("valid bibliography entry regex");
     let mut entries = Vec::new();
     let mut current = Vec::new();
@@ -288,7 +303,8 @@ fn reference_entries(lines: &[String]) -> Vec<String> {
             entries.push(plain_markdown(&current.join("\n")));
             current.clear();
         }
-        current.push(line.to_owned());
+        let line = entry.replace(line, "").into_owned();
+        current.push(line);
     }
     if !current.is_empty() {
         entries.push(plain_markdown(&current.join("\n")));
@@ -382,10 +398,12 @@ fn source_view(source: &str, omit_prefixes: &[String]) -> SourceView {
             continue;
         }
         if !omitted {
-            for capture in note_reference.captures_iter(line) {
-                *note_references.entry(capture[1].to_owned()).or_default() += 1;
+            if !trimmed.starts_with('|') {
+                for capture in note_reference.captures_iter(line) {
+                    *note_references.entry(capture[1].to_owned()).or_default() += 1;
+                }
+                main_lines.push(line.to_owned());
             }
-            main_lines.push(line.to_owned());
             sync_lines.push(line.to_owned());
         }
         index += 1;
@@ -581,13 +599,19 @@ fn normalized_author(author: &str) -> String {
     let author = author
         .trim_start_matches(|ch: char| ch.is_ascii_digit() || matches!(ch, '.' | ')' | ']'))
         .trim();
-    let primary = author
-        .split(['・', '&', ',', '，'])
-        .next()
-        .unwrap_or_default()
-        .split_whitespace()
-        .next()
-        .unwrap_or_default();
+    let japanese_name = Regex::new(r"[一-龠々ヶヵ]+$")
+        .expect("valid Japanese author regex")
+        .find(author)
+        .map(|matched| matched.as_str());
+    let primary = japanese_name.unwrap_or_else(|| {
+        author
+            .split(['・', '&', ',', '，'])
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+    });
     primary
         .chars()
         .filter(|ch| ch.is_alphanumeric() || matches!(ch, '々' | 'ヶ' | 'ヵ'))
@@ -617,14 +641,38 @@ fn citation_keys(source: &str) -> BTreeSet<String> {
 
 fn reference_keys(entry: &str) -> Vec<String> {
     let year = Regex::new(r"[（(]?([12][0-9]{3}[a-z]?)[）)]?").expect("valid reference year regex");
-    year.captures_iter(entry)
-        .filter_map(|capture| {
+    let identifier = Regex::new(r"(?i)(?:\bdoi\s*:|\bhttps?://)").expect("valid DOI or URL regex");
+    let publication = identifier
+        .find(entry)
+        .map_or(entry, |matched| &entry[..matched.start()]);
+    year.captures(publication)
+        .and_then(|capture| {
             let full = capture.get(0)?;
-            let author = normalized_author(&entry[..full.start()]);
+            let author = normalized_author(&publication[..full.start()]);
             let year = capture.get(1)?.as_str().to_ascii_lowercase();
             (!author.is_empty()).then_some(format!("{author}:{year}"))
         })
+        .into_iter()
         .collect()
+}
+
+fn citation_key_matches(citation: &str, reference: &str) -> bool {
+    let Some((citation_author, citation_year)) = citation.split_once(':') else {
+        return false;
+    };
+    let Some((reference_author, reference_year)) = reference.split_once(':') else {
+        return false;
+    };
+    citation_year == reference_year
+        && (citation_author == reference_author
+            || (citation_author
+                .chars()
+                .all(|ch| matches!(ch, '一'..='龠' | '々' | 'ヶ' | 'ヵ'))
+                && reference_author
+                    .chars()
+                    .all(|ch| matches!(ch, '一'..='龠' | '々' | 'ヶ' | 'ヵ'))
+                && (citation_author.starts_with(reference_author)
+                    || reference_author.starts_with(citation_author))))
 }
 
 fn audit_citations(checks: &mut Vec<AcademicCheck>, view: &SourceView) {
@@ -636,8 +684,24 @@ fn audit_citations(checks: &mut Vec<AcademicCheck>, view: &SourceView) {
         }
     }
     let referenced = references.keys().cloned().collect::<BTreeSet<_>>();
-    let missing = cited.difference(&referenced).cloned().collect::<Vec<_>>();
-    let uncited = referenced.difference(&cited).cloned().collect::<Vec<_>>();
+    let missing = cited
+        .iter()
+        .filter(|citation| {
+            !referenced
+                .iter()
+                .any(|reference| citation_key_matches(citation, reference))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let uncited = referenced
+        .iter()
+        .filter(|reference| {
+            !cited
+                .iter()
+                .any(|citation| citation_key_matches(citation, reference))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     let duplicate = references
         .iter()
         .filter(|(_, count)| **count > 1)
@@ -790,12 +854,8 @@ fn zip_entries(path: &Path) -> Result<BTreeMap<String, Vec<u8>>, Error> {
     Ok(entries)
 }
 
-fn docx_text(path: &Path) -> Result<String, Error> {
-    let entries = zip_entries(path)?;
-    let xml = entries
-        .get("word/document.xml")
-        .ok_or_else(|| Error::Academic("DOCXにword/document.xmlがありません".to_owned()))?;
-    let mut reader = Reader::from_reader(xml.as_slice());
+fn word_xml_text(xml: &[u8]) -> Result<String, Error> {
+    let mut reader = Reader::from_reader(xml);
     let mut output = String::new();
     loop {
         match reader.read_event() {
@@ -816,18 +876,95 @@ fn docx_text(path: &Path) -> Result<String, Error> {
     Ok(output)
 }
 
+fn docx_text(path: &Path) -> Result<String, Error> {
+    let entries = zip_entries(path)?;
+    let document = entries
+        .get("word/document.xml")
+        .ok_or_else(|| Error::Academic("DOCXにword/document.xmlがありません".to_owned()))?;
+    let mut parts = vec![word_xml_text(document)?];
+    for name in ["word/footnotes.xml", "word/endnotes.xml"] {
+        if let Some(xml) = entries.get(name) {
+            parts.push(word_xml_text(xml)?);
+        }
+    }
+    Ok(parts.join("\n"))
+}
+
 fn protected_document_layout(xml: &[u8]) -> Result<Vec<String>, Error> {
     let xml = std::str::from_utf8(xml).map_err(|error| {
         Error::Academic(format!("word/document.xmlはUTF-8ではありません: {error}"))
     })?;
+    let section = Regex::new(r#"(?s)<w:sectPr\b.*?</w:sectPr>|<w:sectPr\b[^>]*/>"#)
+        .expect("valid section regex");
     let protected = Regex::new(
-        r#"(?s)<w:sectPr\b.*?</w:sectPr>|<w:sectPr\b[^>]*/>|<w:pPr\b.*?</w:pPr>|<w:pPr\b[^>]*/>|<w:rPr\b.*?</w:rPr>|<w:rPr\b[^>]*/>|<w:tblPr\b.*?</w:tblPr>|<w:tblPr\b[^>]*/>|<w:tblGrid\b.*?</w:tblGrid>|<w:tblGrid\b[^>]*/>|<w:tcPr\b.*?</w:tcPr>|<w:tcPr\b[^>]*/>|<w:drawing\b.*?</w:drawing>|<w:drawing\b[^>]*/>|<w:pict\b.*?</w:pict>|<w:pict\b[^>]*/>|<w:br\b[^>]*w:type="page"[^>]*/>|<w:lastRenderedPageBreak\s*/>|<w:(?:headerReference|footerReference)\b[^>]*/>"#,
+        r#"(?s)<w:pgSz\b[^>]*/>|<w:pgMar\b[^>]*/>|<w:cols\b[^>]*/>|<w:pgBorders\b.*?</w:pgBorders>|<w:pgBorders\b[^>]*/>|<w:(?:headerReference|footerReference)\b[^>]*/>"#,
     )
-    .expect("valid OOXML layout regex");
-    Ok(protected
+    .expect("valid protected section settings regex");
+    Ok(section
         .find_iter(xml)
+        .flat_map(|section| protected.find_iter(section.as_str()))
         .map(|item| normalized(item.as_str()))
         .collect())
+}
+
+fn xml_elements(
+    xml: &[u8],
+    element_names: &[&str],
+    identity_attribute: &str,
+) -> Result<BTreeMap<String, String>, Error> {
+    let xml = std::str::from_utf8(xml)
+        .map_err(|error| Error::Academic(format!("OOXMLはUTF-8ではありません: {error}")))?;
+    let elements = Regex::new(&format!(
+        r#"<(?:{})\b(?P<attributes>[^>]*)/?>"#,
+        element_names.join("|")
+    ))
+    .expect("valid OOXML element regex");
+    let attributes = Regex::new(r#"([A-Za-z:]+)="([^"]*)""#).expect("valid OOXML attribute regex");
+    let mut values = BTreeMap::new();
+    for element in elements.captures_iter(xml) {
+        let mut attributes = attributes
+            .captures_iter(
+                element
+                    .name("attributes")
+                    .map_or("", |value| value.as_str()),
+            )
+            .map(|attribute| (attribute[1].to_owned(), attribute[2].to_owned()))
+            .collect::<BTreeMap<_, _>>();
+        let identity = attributes.remove(identity_attribute).ok_or_else(|| {
+            Error::Academic(format!(
+                "OOXMLの{}に{}がありません",
+                element_names.join("/"),
+                identity_attribute
+            ))
+        })?;
+        let content = attributes
+            .into_iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join(";");
+        values.insert(identity, content);
+    }
+    Ok(values)
+}
+
+fn preserves_xml_elements(
+    before: &[u8],
+    after: &[u8],
+    element_names: &[&str],
+    identity_attribute: &str,
+) -> Result<bool, Error> {
+    let before = xml_elements(before, element_names, identity_attribute)?;
+    let after = xml_elements(after, element_names, identity_attribute)?;
+    Ok(before
+        .iter()
+        .all(|(identity, value)| after.get(identity) == Some(value)))
+}
+
+fn preserves_content_types(before: &[u8], after: &[u8]) -> Result<bool, Error> {
+    Ok(
+        preserves_xml_elements(before, after, &["Default"], "Extension")?
+            && preserves_xml_elements(before, after, &["Override"], "PartName")?,
+    )
 }
 
 fn mutable(name: &str, rules: &[String]) -> bool {
@@ -851,9 +988,26 @@ fn audit_ooxml(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .filter(|name| {
-            name.as_str() != "word/document.xml"
-                && !mutable(name, mutable_entries)
-                && before.get(*name) != after.get(*name)
+            if name.as_str() == "word/document.xml" || mutable(name, mutable_entries) {
+                return false;
+            }
+            match name.as_str() {
+                "[Content_Types].xml" => before.get(*name).is_none_or(|before_xml| {
+                    after.get(*name).is_none_or(|after_xml| {
+                        !preserves_content_types(before_xml, after_xml).unwrap_or(false)
+                    })
+                }),
+                "word/_rels/document.xml.rels" => before.get(*name).is_none_or(|before_xml| {
+                    after.get(*name).is_none_or(|after_xml| {
+                        !preserves_xml_elements(before_xml, after_xml, &["Relationship"], "Id")
+                            .unwrap_or(false)
+                    })
+                }),
+                name if name.starts_with("word/media/") => {
+                    before.contains_key(name) && before.get(name) != after.get(name)
+                }
+                _ => before.get(*name) != after.get(*name),
+            }
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -939,44 +1093,80 @@ fn sync_normalized(text: &str, omitted_fragments: &[String]) -> String {
     normalized(&text)
 }
 
+fn sync_inventory(text: &str, omitted_fragments: &[String]) -> SyncInventory {
+    let normalized_text = sync_normalized(text, omitted_fragments);
+    let mut blocks = BTreeMap::<String, usize>::new();
+    for block in text
+        .split_inclusive(['。', '！', '？', '.', '!', '?'])
+        .map(|block| sync_normalized(block, omitted_fragments))
+        .filter(|block| !block.is_empty())
+    {
+        *blocks.entry(block).or_default() += 1;
+    }
+    let mut characters = BTreeMap::<char, usize>::new();
+    for character in normalized_text.chars() {
+        *characters.entry(character).or_default() += 1;
+    }
+    let duplicate_blocks = blocks
+        .values()
+        .filter(|count| **count > 1)
+        .map(|count| count - 1)
+        .sum();
+    SyncInventory {
+        blocks,
+        characters,
+        character_count: normalized_text.chars().count(),
+        duplicate_blocks,
+    }
+}
+
+fn inventories_match(source: &SyncInventory, artifact: &SyncInventory) -> bool {
+    source.blocks == artifact.blocks
+        && source.characters == artifact.characters
+        && source.character_count == artifact.character_count
+        && source.duplicate_blocks == artifact.duplicate_blocks
+}
+
 fn audit_sync(
     checks: &mut Vec<AcademicCheck>,
     view: &SourceView,
     contract: &AcademicContract,
     paths: &ArtifactPaths<'_>,
 ) -> Result<(), Error> {
-    let source = sync_normalized(&view.sync_text, &contract.sync_omit_fragments);
+    let source = sync_inventory(&view.sync_text, &contract.sync_omit_fragments);
     if let Some(docx) = paths.docx {
-        let text = sync_normalized(&docx_text(docx)?, &contract.sync_omit_fragments);
+        let text = sync_inventory(&docx_text(docx)?, &contract.sync_omit_fragments);
+        let matches = inventories_match(&source, &text);
         add_check(
             checks,
             "markdown_docx_sync",
-            source == text,
+            matches,
             format!(
-                "MarkdownとDOCXの本文・表・注・参考文献を双方向照合: {}",
-                if source == text {
-                    "一致"
-                } else {
-                    "不一致"
-                }
+                "MarkdownとDOCXの本文・表・注・参考文献を順序非依存で双方向照合（文字数 {} / {}、重複ブロック {} / {}）: {}",
+                source.character_count,
+                text.character_count,
+                source.duplicate_blocks,
+                text.duplicate_blocks,
+                if matches { "一致" } else { "不一致" }
             ),
         );
     }
     if let Some(pdf) = paths.pdf {
         let extracted = pdf_extract::extract_text(pdf)
             .map_err(|error| Error::Academic(format!("PDF本文を抽出できません: {error}")))?;
-        let text = sync_normalized(&extracted, &contract.sync_omit_fragments);
+        let text = sync_inventory(&extracted, &contract.sync_omit_fragments);
+        let matches = inventories_match(&source, &text);
         add_check(
             checks,
             "markdown_pdf_sync",
-            source == text,
+            matches,
             format!(
-                "MarkdownとPDFの本文・表・注・参考文献を双方向照合: {}",
-                if source == text {
-                    "一致"
-                } else {
-                    "不一致"
-                }
+                "MarkdownとPDFの本文・表・注・参考文献を順序非依存で双方向照合（文字数 {} / {}、重複ブロック {} / {}）: {}",
+                source.character_count,
+                text.character_count,
+                source.duplicate_blocks,
+                text.duplicate_blocks,
+                if matches { "一致" } else { "不一致" }
             ),
         );
     }
@@ -1228,8 +1418,8 @@ mod tests {
     use zip::write::SimpleFileOptions;
 
     use super::{
-        AcademicContract, ArtifactPaths, audit, audit_citations, audit_notes, audit_sync,
-        file_sha256, source_view, style_observations,
+        AcademicContract, ArtifactPaths, audit, audit_citations, audit_notes, audit_ooxml,
+        audit_sync, file_sha256, source_view, style_observations,
     };
 
     fn write_docx(path: &std::path::Path, text: &str, style: &str, extra: Option<(&str, &str)>) {
@@ -1243,12 +1433,33 @@ mod tests {
         layout: &str,
         extra: Option<(&str, &str)>,
     ) {
+        write_docx_with_entries(
+            path,
+            text,
+            style,
+            layout,
+            &extra.into_iter().collect::<Vec<_>>(),
+        );
+    }
+
+    fn write_docx_with_entries(
+        path: &std::path::Path,
+        text: &str,
+        style: &str,
+        layout: &str,
+        extras: &[(&str, &str)],
+    ) {
         let file = File::create(path).expect("create docx");
         let mut zip = ZipWriter::new(file);
         let options = SimpleFileOptions::default();
+        let content_types = extras
+            .iter()
+            .find_map(|(name, contents)| (*name == "[Content_Types].xml").then_some(*contents))
+            .unwrap_or("<Types/>");
         zip.start_file("[Content_Types].xml", options)
             .expect("content types");
-        zip.write_all(b"<Types/>").expect("write content types");
+        zip.write_all(content_types.as_bytes())
+            .expect("write content types");
         zip.start_file("word/styles.xml", options).expect("styles");
         zip.write_all(style.as_bytes()).expect("write styles");
         zip.start_file("word/document.xml", options)
@@ -1260,7 +1471,10 @@ mod tests {
             .as_bytes(),
         )
         .expect("write document");
-        if let Some((name, contents)) = extra {
+        for (name, contents) in extras {
+            if *name == "[Content_Types].xml" {
+                continue;
+            }
             zip.start_file(name, options).expect("extra entry");
             zip.write_all(contents.as_bytes())
                 .expect("write extra entry");
@@ -1634,6 +1848,199 @@ mod tests {
                 .iter()
                 .any(|item| item.id == "duplicate_references" && item.status == "fail")
         );
+    }
+
+    #[test]
+    fn citations_accept_decorated_headings_list_markers_surnames_and_single_publication_year() {
+        let good = source_view(
+            "本文中の一般語として参考文献を説明する。秋吉（2000）、Sano (2024a)、田中（2024b）を使う。\n\n| 層 | 原典 |\n| - | - |\n| 戦略 | van de Velde（1999） |\n\n## ―――参考文献―――\n\n- 秋吉貴雄（2000）『行政計画』。doi:10.1000/2010.2025\n1) Sano (2024a). https://example.test/2011\n１）田中太郎（2024b）.\n[1] Other (1999).\n",
+            &[],
+        );
+        let mut checks = Vec::new();
+        audit_citations(&mut checks, &good);
+        assert!(
+            checks
+                .iter()
+                .find(|item| item.id == "citation_reference_match")
+                .is_some_and(|item| item.status == "pass"),
+            "{checks:#?}"
+        );
+        assert!(
+            checks
+                .iter()
+                .find(|item| item.id == "uncited_references")
+                .is_some_and(|item| item.status == "fail"),
+            "the uncited [1] entry must remain a real bibliography entry: {checks:#?}"
+        );
+        assert!(
+            !good.references[0].starts_with('-')
+                && !good.references[1].starts_with('1')
+                && !good.references[2].starts_with('１'),
+            "list markers must not become author text: {:?}",
+            good.references
+        );
+    }
+
+    #[test]
+    fn ooxml_allows_article_content_additions_but_preserves_template_assets_and_sections() {
+        let dir = tempdir().expect("tempdir");
+        let template = dir.path().join("template.docx");
+        let docx = dir.path().join("submission.docx");
+        let layout = r#"<w:sectPr><w:pgSz w:w="11906"/><w:pgMar w:left="100"/><w:cols w:num="2"/><w:pgBorders><w:top w:val="single"/></w:pgBorders><w:headerReference w:id="rId1"/></w:sectPr>"#;
+        let template_entries = [
+            (
+                "[Content_Types].xml",
+                r#"<Types><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/main"/></Types>"#,
+            ),
+            (
+                "word/_rels/document.xml.rels",
+                r#"<Relationships><Relationship Id="rId1" Type="header" Target="header1.xml"/></Relationships>"#,
+            ),
+            ("word/header1.xml", "<header>fixed</header>"),
+            ("word/media/template.png", "template image"),
+        ];
+        write_docx_with_entries(
+            &template,
+            "placeholder",
+            "<styles>fixed</styles>",
+            layout,
+            &template_entries,
+        );
+        let submission_entries = [
+            (
+                "[Content_Types].xml",
+                r#"<Types><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/main"/><Override PartName="/word/media/article.png" ContentType="image/png"/></Types>"#,
+            ),
+            (
+                "word/_rels/document.xml.rels",
+                r#"<Relationships><Relationship Id="rId1" Type="header" Target="header1.xml"/><Relationship Id="rId2" Type="image" Target="media/article.png"/></Relationships>"#,
+            ),
+            ("word/header1.xml", "<header>fixed</header>"),
+            ("word/media/template.png", "template image"),
+            ("word/media/article.png", "article image"),
+        ];
+        write_docx_with_entries(
+            &docx,
+            "Article body",
+            "<styles>fixed</styles>",
+            &format!(
+                "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>table</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:drawing/>{layout}"
+            ),
+            &submission_entries,
+        );
+        let mut checks = Vec::new();
+        audit_ooxml(
+            &mut checks,
+            &template,
+            &docx,
+            &contract().docx_mutable_entries,
+        )
+        .expect("OOXML audit");
+        assert!(
+            checks.iter().all(|item| item.status == "pass"),
+            "{checks:#?}"
+        );
+
+        write_docx_with_entries(
+            &docx,
+            "Article body",
+            "<styles>fixed</styles>",
+            &layout.replace("w:left=\"100\"", "w:left=\"200\""),
+            &submission_entries,
+        );
+        let mut section_changed = Vec::new();
+        audit_ooxml(
+            &mut section_changed,
+            &template,
+            &docx,
+            &contract().docx_mutable_entries,
+        )
+        .expect("OOXML audit");
+        assert!(section_changed.iter().any(|item| item.status == "fail"));
+
+        let changed_header = [
+            ("[Content_Types].xml", submission_entries[0].1),
+            ("word/_rels/document.xml.rels", submission_entries[1].1),
+            ("word/header1.xml", "<header>changed</header>"),
+            ("word/media/template.png", "template image"),
+            ("word/media/article.png", "article image"),
+        ];
+        write_docx_with_entries(
+            &docx,
+            "Article body",
+            "<styles>fixed</styles>",
+            layout,
+            &changed_header,
+        );
+        let mut header_changed = Vec::new();
+        audit_ooxml(
+            &mut header_changed,
+            &template,
+            &docx,
+            &contract().docx_mutable_entries,
+        )
+        .expect("OOXML audit");
+        assert!(header_changed.iter().any(|item| item.status == "fail"));
+    }
+
+    #[test]
+    fn docx_footnotes_sync_without_order_dependence_and_reject_extra_duplicates() {
+        let dir = tempdir().expect("tempdir");
+        let source_path = dir.path().join("paper.md");
+        let docx = dir.path().join("paper.docx");
+        let source = "Body.[^a] Also body.[^b]\n\n[^a]: Note A.\n[^b]: Note B.\n";
+        std::fs::write(&source_path, source).expect("source");
+        let notes = r#"<w:footnotes xmlns:w="urn:test"><w:footnote w:id="1"><w:p><w:r><w:t>Note B.</w:t></w:r></w:p></w:footnote><w:footnote w:id="2"><w:p><w:r><w:t>Note A.</w:t></w:r></w:p></w:footnote></w:footnotes>"#;
+        write_docx_with_entries(
+            &docx,
+            "Body. Also body.",
+            "<styles>fixed</styles>",
+            "",
+            &[("word/footnotes.xml", notes)],
+        );
+        let view = source_view(source, &[]);
+        let mut checks = Vec::new();
+        audit_sync(
+            &mut checks,
+            &view,
+            &contract(),
+            &ArtifactPaths {
+                source: &source_path,
+                docx: Some(&docx),
+                pdf: None,
+                template: None,
+                export_record: None,
+            },
+        )
+        .expect("sync");
+        assert!(
+            checks.iter().all(|item| item.status == "pass"),
+            "{checks:#?}"
+        );
+
+        let duplicate_notes = notes.replace("</w:footnotes>", "<w:footnote w:id=\"3\"><w:p><w:r><w:t>Note A.</w:t></w:r></w:p></w:footnote></w:footnotes>");
+        write_docx_with_entries(
+            &docx,
+            "Body. Also body.",
+            "<styles>fixed</styles>",
+            "",
+            &[("word/footnotes.xml", &duplicate_notes)],
+        );
+        let mut duplicated = Vec::new();
+        audit_sync(
+            &mut duplicated,
+            &view,
+            &contract(),
+            &ArtifactPaths {
+                source: &source_path,
+                docx: Some(&docx),
+                pdf: None,
+                template: None,
+                export_record: None,
+            },
+        )
+        .expect("sync");
+        assert!(duplicated.iter().all(|item| item.status == "fail"));
     }
 
     #[test]
