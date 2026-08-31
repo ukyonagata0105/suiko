@@ -104,6 +104,15 @@ fn help_describes_the_three_analysis_commands() {
 }
 
 #[test]
+fn lint_help_explains_the_essay_only_experimental_detector() {
+    cargo_bin_cmd!("suiko")
+        .args(["lint", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--genre essay"));
+}
+
+#[test]
 fn lint_json_reports_findings_with_source_lines() {
     let (_dir, path) =
         draft("# 提案\n\n重要なのは、距離を克服することができる点だと言えるでしょう。\n");
@@ -218,7 +227,7 @@ fn findings_carry_line_column_and_byte_spans() {
 fn reference_and_code_annotation_lines_are_masked_from_prose() {
     let long_tail = "とても長い説明をここへ続けて九十字の目安を確実に超えるようにし、読解負荷の対象になるかどうかを確かめられるだけの十分な長さを確保したうえで、さらに念のため補足の語句も付け加えておきます";
     let (_dir, path) = draft(&format!(
-        "[1] McKinsey & Company. {long_tail}。\n\n#A 図8.2の状態管理システムを初期化する注釈で{long_tail}。\n\n研究[1]によると、{long_tail}。\n"
+        "[1] McKinsey & Company. {long_tail}。\n\n# 参考文献\nMcKinsey & Company (2025). Superagency in the workplace. https://example.com/report\n\n# bibliography\nAuthor (2026). Another long article title. https://example.com/article\n\n# 本文\n#A 図8.2の状態管理システムを初期化する注釈で{long_tail}。\n\n研究[1]によると、{long_tail}。\n"
     ));
 
     let output = cargo_bin_cmd!("suiko")
@@ -232,7 +241,7 @@ fn reference_and_code_annotation_lines_are_masked_from_prose() {
         .expect("run suiko lint");
     assert!(output.status.success());
     let json: Value = serde_json::from_slice(&output.stdout).expect("valid JSON output");
-    assert_eq!(json["stats"]["masking"]["reference_lines"], 1);
+    assert_eq!(json["stats"]["masking"]["reference_lines"], 3);
     assert_eq!(json["stats"]["masking"]["code_annotation_lines"], 1);
     // 本文として残るのは文中参照の1文だけで、それはsentence_too_longに数える
     assert_eq!(json["reading_load"]["stats"]["sentences"], 1);
@@ -391,6 +400,240 @@ fn experimental_sentence_runs_do_not_cross_blank_lines() {
                 Some("repeated_sentence_mode" | "consecutive_nominal_endings")
             ))
     );
+}
+
+#[test]
+fn self_labeling_repetition_requires_three_hits_and_experimental_mode() {
+    let morphology = Morphology::new().expect("initialize morphology");
+    let body = concat!(
+        "必要なのは、判断基準を揃えることです。\n",
+        "面白いのは、結果が逆転した点です。\n",
+        "避けたいのは、確認を先送りすることです。\n",
+        "正直に言うと、今回は判断に迷いました。\n",
+    );
+
+    let experimental = lint::analyze(body, &morphology, Some("essay"), true).expect("analyze text");
+    let findings = experimental
+        .findings
+        .iter()
+        .filter(|finding| finding.category == "self_labeling_repetition")
+        .collect::<Vec<_>>();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].severity, "info");
+    assert_eq!(findings[0].related_lines, Some(vec![1, 2, 3]));
+
+    let default = lint::analyze(body, &morphology, Some("essay"), false).expect("analyze text");
+    assert!(
+        default
+            .findings
+            .iter()
+            .all(|finding| finding.category != "self_labeling_repetition")
+    );
+
+    let two_hits = "必要なのは速度です。\n面白いのは結果です。\n";
+    let below_threshold =
+        lint::analyze(two_hits, &morphology, Some("essay"), true).expect("analyze text");
+    assert!(
+        below_threshold
+            .findings
+            .iter()
+            .all(|finding| finding.category != "self_labeling_repetition")
+    );
+
+    let discourse_markers = concat!(
+        "正直に言うと、今回は判断に迷いました。\n",
+        "率直に言えば、この案には懸念があります。\n",
+        "正直に言うと、まだ結論は出ていません。\n",
+    );
+    let discourse =
+        lint::analyze(discourse_markers, &morphology, Some("essay"), true).expect("analyze text");
+    assert!(
+        discourse
+            .findings
+            .iter()
+            .all(|finding| finding.category != "self_labeling_repetition")
+    );
+}
+
+#[test]
+fn negative_listing_requires_two_negations_followed_by_a_short_assertion() {
+    let morphology = Morphology::new().expect("initialize morphology");
+    let body = "これは戦略ではない。戦術でもない。習慣だ。\n";
+
+    let experimental = lint::analyze(body, &morphology, Some("essay"), true).expect("analyze text");
+    let findings = experimental
+        .findings
+        .iter()
+        .filter(|finding| finding.category == "negative_listing")
+        .collect::<Vec<_>>();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].severity, "info");
+    assert_eq!(findings[0].related_lines, Some(vec![1]));
+
+    let default = lint::analyze(body, &morphology, Some("essay"), false).expect("analyze text");
+    assert!(
+        default
+            .findings
+            .iter()
+            .all(|finding| finding.category != "negative_listing")
+    );
+
+    let separate_paragraphs =
+        "これは戦略ではない。\n\n戦術でもない。\n習慣として続けることにした。\n";
+    let separated =
+        lint::analyze(separate_paragraphs, &morphology, Some("essay"), true).expect("analyze text");
+    assert!(
+        separated
+            .findings
+            .iter()
+            .all(|finding| finding.category != "negative_listing")
+    );
+
+    let polite = "これは戦略ではありません。戦術でもありません。習慣です。\n";
+    let polite_report =
+        lint::analyze(polite, &morphology, Some("essay"), true).expect("analyze text");
+    assert!(
+        polite_report
+            .findings
+            .iter()
+            .any(|finding| finding.category == "negative_listing")
+    );
+
+    let long = format!(
+        "これは{}ではない。{}でもない。習慣だ。\n",
+        "長期計画".repeat(20),
+        "短期施策".repeat(20)
+    );
+    let long_report = lint::analyze(&long, &morphology, Some("essay"), true).expect("analyze text");
+    let excerpt = &long_report
+        .findings
+        .iter()
+        .find(|finding| finding.category == "negative_listing")
+        .expect("negative listing")
+        .excerpt;
+    assert!(excerpt.chars().count() <= 100, "excerpt: {excerpt}");
+}
+
+#[test]
+fn uniform_bullet_structure_requires_four_morphologically_similar_items() {
+    let morphology = Morphology::new().expect("initialize morphology");
+    let body = concat!(
+        "- 安定したマイニング効率\n",
+        "- 信頼性の高いプール接続\n",
+        "- 最適化されたパフォーマンス\n",
+        "- 低いシェア失敗率\n",
+        "- 効果的なハードウェア利用\n",
+    );
+
+    let experimental = lint::analyze(body, &morphology, Some("essay"), true).expect("analyze text");
+    let findings = experimental
+        .findings
+        .iter()
+        .filter(|finding| finding.category == "uniform_bullet_structure")
+        .collect::<Vec<_>>();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].severity, "info");
+    assert_eq!(findings[0].related_lines, Some(vec![1, 2, 3, 4, 5]));
+
+    let default = lint::analyze(body, &morphology, Some("essay"), false).expect("analyze text");
+    assert!(
+        default
+            .findings
+            .iter()
+            .all(|finding| finding.category != "uniform_bullet_structure")
+    );
+
+    let mixed = concat!(
+        "- 設定ファイル\n",
+        "- 保存する\n",
+        "- 障害が起きた場合は担当者へ連絡してください\n",
+        "- 2026年8月31日\n",
+    );
+    let varied = lint::analyze(mixed, &morphology, Some("essay"), true).expect("analyze text");
+    assert!(
+        varied
+            .findings
+            .iter()
+            .all(|finding| finding.category != "uniform_bullet_structure")
+    );
+
+    let business = lint::analyze(body, &morphology, Some("business"), true).expect("analyze text");
+    assert!(
+        business
+            .findings
+            .iter()
+            .all(|finding| finding.category != "uniform_bullet_structure")
+    );
+
+    let technical = lint::analyze(body, &morphology, Some("tech"), true).expect("analyze text");
+    assert!(
+        technical
+            .findings
+            .iter()
+            .all(|finding| finding.category != "uniform_bullet_structure")
+    );
+
+    let unspecified = lint::analyze(body, &morphology, None, true).expect("analyze text");
+    assert!(
+        unspecified
+            .findings
+            .iter()
+            .all(|finding| finding.category != "uniform_bullet_structure")
+    );
+
+    let fenced = format!("```markdown\n{body}```\n");
+    let code_example =
+        lint::analyze(&fenced, &morphology, Some("essay"), true).expect("analyze text");
+    assert!(
+        code_example
+            .findings
+            .iter()
+            .all(|finding| finding.category != "uniform_bullet_structure")
+    );
+}
+
+#[test]
+fn technical_ambiguity_candidates_require_tech_and_experimental_mode() {
+    let morphology = Morphology::new().expect("initialize morphology");
+    let body = concat!(
+        "入力値を検査し、異常なら処理を中断して、そのことをログに記録する。\n",
+        "両辺の実部と虚部をそれぞれ等号で結ぶ。\n",
+        "入力値の検査に失敗した。そのことをログに記録する。\n",
+        "R、G、Bは、それぞれRed、Green、Blueの頭文字に対応する。\n",
+    );
+
+    let report = lint::analyze(body, &morphology, Some("tech"), true).expect("analyze text");
+    let categories = report
+        .findings
+        .iter()
+        .filter(|finding| {
+            matches!(
+                finding.category.as_str(),
+                "demonstrative_reference" | "respectively_scope"
+            )
+        })
+        .map(|finding| finding.category.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        categories,
+        vec!["demonstrative_reference", "respectively_scope"]
+    );
+
+    let essay = lint::analyze(body, &morphology, Some("essay"), true).expect("analyze text");
+    assert!(essay.findings.iter().all(|finding| {
+        !matches!(
+            finding.category.as_str(),
+            "demonstrative_reference" | "respectively_scope"
+        )
+    }));
+
+    let default = lint::analyze(body, &morphology, Some("tech"), false).expect("analyze text");
+    assert!(default.findings.iter().all(|finding| {
+        !matches!(
+            finding.category.as_str(),
+            "demonstrative_reference" | "respectively_scope"
+        )
+    }));
 }
 
 #[test]
@@ -1057,6 +1300,34 @@ fn safe_suggestions_carry_matching_preimages_and_never_modify_files() {
     // 読み取り専用: 入力ファイルは変更されない
     let unchanged = std::fs::read_to_string(&path).expect("read draft");
     assert_eq!(unchanged, contents);
+}
+
+#[test]
+fn abstract_motsu_candidates_are_enumerated_from_morpheme_sequences() {
+    let morphology = Morphology::new().expect("initialize morphology");
+    let body = concat!(
+        "この決定は大きな意味を持つ。\n",
+        "どんな証拠が出たら見直すかを持つ。\n",
+        "相手が持てる未決が少ない。\n",
+        "私は傘を持つ。\n",
+        "担当者が停止権限を持つ。\n",
+        "疑問を持つこと自体は悪くない。\n",
+    );
+
+    let report = lint::analyze(body, &morphology, Some("essay"), false).expect("analyze text");
+    let candidates = report
+        .findings
+        .iter()
+        .filter(|finding| finding.category == "translationese_morph")
+        .map(|finding| finding.excerpt.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(candidates, vec!["意味を持つ", "かを持つ", "持てる未決"]);
+    assert!(
+        report
+            .findings
+            .iter()
+            .all(|finding| finding.category != "translationese")
+    );
 }
 
 // redundant_light_verb契約: サ変名詞+を+行う(隣接)だけが対象で、受身・使役・

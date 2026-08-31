@@ -11,15 +11,15 @@ cd "${WORKDIR}"
 echo "==> 一覧取得: ${REPO_URL}"
 npx -y skills add "${REPO_URL}" --list
 
-echo "==> 登録: --skill suiko"
-npx -y skills add "${REPO_URL}" --skill suiko
+echo "==> 登録: --skill home-suiko"
+npx -y skills add "${REPO_URL}" --skill home-suiko
 
 echo "==> 内容物の検証"
 status=0
 for file in SKILL.md agents/openai.yaml references/manual-checklist.md \
     references/diagnose.md assets/style-profile-template.md \
     scripts/run-textlint-ai-writing.sh; do
-    found="$(find . -path "*skills/suiko/${file}" | head -1)"
+    found="$(find . -path "*skills/home-suiko/${file}" | head -1)"
     if [ -n "${found}" ]; then
         echo "OK ${file}"
     else
@@ -33,11 +33,11 @@ done
 if command -v gh >/dev/null 2>&1; then
     OWNER_REPO="${REPO_URL#https://github.com/}"
     echo "==> gh skill install: ${OWNER_REPO}"
-    if gh skill install "${OWNER_REPO}" suiko --dir "${WORKDIR}/gh-skill"; then
-        if [ -f "${WORKDIR}/gh-skill/suiko/SKILL.md" ]; then
-            echo "OK gh-skill/suiko/SKILL.md"
+    if gh skill install "${OWNER_REPO}" home-suiko --dir "${WORKDIR}/gh-skill"; then
+        if [ -f "${WORKDIR}/gh-skill/home-suiko/SKILL.md" ]; then
+            echo "OK gh-skill/home-suiko/SKILL.md"
         else
-            echo "MISSING gh-skill/suiko/SKILL.md" >&2
+            echo "MISSING gh-skill/home-suiko/SKILL.md" >&2
             status=1
         fi
     else

@@ -33,13 +33,18 @@ const EXPERIMENTAL_CATEGORIES: &[&str] = &[
     "boilerplate_heading",
     "numbered_phase_structure",
     "high_emoji_symbol_density",
+    "demonstrative_reference",
+    "negative_listing",
+    "repeated_sentence_mode",
+    "respectively_scope",
+    "self_labeling_repetition",
+    "uniform_bullet_structure",
     // 2026-08-19の実測(現代人間dev 75文書)で既定ONを支えられず降格した3件。
     // TTRは文書長への構造的依存(50k語の白書でTTR=0.094)、文頭反復は絶対回数
     // 閾値の長さ交絡(fpr 0.613)、MTLDは全候補閾値でAI検出0。eval/calibration.md
     "low_lexical_diversity_ttr",
     "low_lexical_diversity_mtld",
     "repeated_sentence_lead",
-    "repeated_sentence_mode",
 ];
 
 const RULE_CATEGORIES: &[&str] = &[
@@ -50,6 +55,7 @@ const RULE_CATEGORIES: &[&str] = &[
     "bullet_emoji",
     "buried_list",
     "consecutive_nominal_endings",
+    "demonstrative_reference",
     "double_negative",
     "english_syntax_cleft_because",
     "english_syntax_inanimate_subject",
@@ -66,6 +72,7 @@ const RULE_CATEGORIES: &[&str] = &[
     "low_lexical_diversity_ttr",
     "low_sentence_variance",
     "low_specificity",
+    "negative_listing",
     "no_chain",
     "no_comma_sentence",
     "nominal_ending",
@@ -76,9 +83,12 @@ const RULE_CATEGORIES: &[&str] = &[
     "repeated_sentence_lead",
     "repeated_sentence_mode",
     "repeated_syntax_template",
+    "respectively_scope",
+    "self_labeling_repetition",
     "sentence_too_long",
     "translationese",
     "translationese_morph",
+    "uniform_bullet_structure",
     "uniform_paragraph_structure",
 ];
 
@@ -318,6 +328,12 @@ pub fn analyze_with_thresholds(
 
     let mut findings = structural_findings;
     findings.extend(patterns::local_pattern_findings(raw, morphology)?);
+    // 箇条書きの並行性は技術・業務文書では理解を助けるため、散文を明示した場合だけ観測する。
+    if experimental && genre == Some("essay") {
+        findings.extend(patterns::uniform_bullet_structure_findings(
+            raw, morphology,
+        )?);
+    }
     findings.extend(patterns::forbidden_findings(&masked, raw));
     findings.extend(patterns::translationese_findings(&masked, raw));
     findings.extend(patterns::antithesis_findings(
@@ -328,6 +344,13 @@ pub fn analyze_with_thresholds(
     ));
     findings.extend(patterns::english_syntax_findings(&masked, raw, &split));
     findings.extend(morph::translationese_morph_findings(&tokenized, &raw_lines));
+    findings.extend(morph::self_labeling_repetition_findings(
+        &tokenized, &raw_lines,
+    ));
+    findings.extend(morph::negative_listing_findings(&tokenized, &raw_lines));
+    if experimental && genre == Some("tech") {
+        findings.extend(morph::technical_ambiguity_findings(&tokenized, &raw_lines));
+    }
     findings.extend(morph::inanimate_morph_findings(&tokenized, &raw_lines));
     findings.extend(morph::abstract_metaphor_findings(&tokenized, &raw_lines));
     findings.extend(morph::redundant_light_verb_findings(&tokenized, &raw_lines));

@@ -12,6 +12,34 @@ use crate::text::{Sentence, excerpt_around, mask_html_comments, numbered_lines};
 
 use super::{Finding, make_span};
 
+const BULLET_MARKER_PATTERN: &str = r"^\s*(?:[-*+]|[0-9]+[.)])\s+";
+
+fn fenced_lines(lines: &[&str]) -> Vec<bool> {
+    let mut fence: Option<(char, usize)> = None;
+    lines
+        .iter()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            let fence_run = trimmed
+                .chars()
+                .next()
+                .filter(|ch| *ch == '`' || *ch == '~')
+                .map(|ch| (ch, trimmed.chars().take_while(|c| c == &ch).count()));
+            if let Some((open_char, open_len)) = fence {
+                if fence_run.is_some_and(|(ch, len)| ch == open_char && len >= open_len) {
+                    fence = None;
+                }
+                true
+            } else if let Some((ch, len)) = fence_run.filter(|(_, len)| *len >= 3) {
+                fence = Some((ch, len));
+                true
+            } else {
+                false
+            }
+        })
+        .collect()
+}
+
 const FORBIDDEN_PHRASES: &[&str] = &[
     "と言えるでしょう",
     "と言えるだろう",
@@ -92,7 +120,6 @@ const TRANSLATIONESE_PATTERNS: &[&str] = &[
     r"という点で",
     r"という観点(から|で)",
     r"にとって(重要|不可欠)",
-    r"を持つ(こと|存在)",
     r"することによって",
     r"であることは間違いない",
     r"に他ならない",
@@ -433,31 +460,18 @@ pub(super) fn local_pattern_findings(
 ) -> Result<Vec<Finding>, Error> {
     let masked = mask_html_comments(raw);
     let raw_lines = raw.split('\n').collect::<Vec<_>>();
-    let bullet_marker =
-        Regex::new(r"^\s*(?:[-*+]|[0-9]+[.)])\s+").expect("valid bullet-marker regex");
+    let bullet_marker = Regex::new(BULLET_MARKER_PATTERN).expect("valid bullet-marker regex");
     let bold_label = Regex::new(r"\*\*[^*\n]+\*\*\s*[:：]").expect("valid bold-label regex");
 
     let mut findings = Vec::new();
     let mut bold_hits = Vec::<(usize, usize, usize)>::new();
     let mut emoji_hits = Vec::<(usize, usize, usize)>::new();
-    let mut fence: Option<(char, usize)> = None;
     let lines = masked.split('\n').collect::<Vec<_>>();
+    let fenced = fenced_lines(&lines);
     for (index, line) in lines.iter().enumerate() {
         let line_no = index + 1;
         let trimmed = line.trim_start();
-        let fence_run = trimmed
-            .chars()
-            .next()
-            .filter(|ch| *ch == '`' || *ch == '~')
-            .map(|ch| (ch, trimmed.chars().take_while(|c| c == &ch).count()));
-        if let Some((open_char, open_len)) = fence {
-            if fence_run.is_some_and(|(ch, len)| ch == open_char && len >= open_len) {
-                fence = None;
-            }
-            continue;
-        }
-        if let Some((ch, len)) = fence_run.filter(|(_, len)| *len >= 3) {
-            fence = Some((ch, len));
+        if fenced[index] {
             continue;
         }
         if trimmed.starts_with('>') {
@@ -582,4 +596,126 @@ pub(super) fn local_pattern_findings(
         findings.push(finding);
     }
     Ok(findings)
+}
+
+pub(super) fn uniform_bullet_structure_findings(
+    raw: &str,
+    morphology: &Morphology,
+) -> Result<Vec<Finding>, Error> {
+    let masked = mask_html_comments(raw);
+    let raw_lines = raw.split('\n').collect::<Vec<_>>();
+    let bullet_marker = Regex::new(BULLET_MARKER_PATTERN).expect("valid bullet-marker regex");
+    let mut groups = Vec::new();
+    let mut current = Vec::new();
+    let lines = masked.split('\n').collect::<Vec<_>>();
+    let fenced = fenced_lines(&lines);
+
+    for (index, line) in lines.into_iter().enumerate() {
+        let line_no = index + 1;
+        let trimmed = line.trim_start();
+        if fenced[index] {
+            if !current.is_empty() {
+                groups.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+
+        let Some(marker) = bullet_marker
+            .find(line)
+            .filter(|_| !trimmed.starts_with('>'))
+        else {
+            if !current.is_empty() {
+                groups.push(std::mem::take(&mut current));
+            }
+            continue;
+        };
+        let content = line[marker.end()..].trim_end();
+        let tokens = morphology.tokenize(content)?;
+        let content_count = tokens
+            .iter()
+            .filter(|token| super::morph::CONTENT_POS.contains(&token.pos(0)))
+            .count();
+        let terminal_pos = tokens
+            .iter()
+            .rev()
+            .find(|token| !matches!(token.pos(0), "記号" | "補助記号" | "空白"))
+            .map(|token| token.pos(0).to_owned());
+        if content_count == 0 || terminal_pos.is_none() {
+            if !current.is_empty() {
+                groups.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        current.push((
+            line_no,
+            marker.end(),
+            marker.end() + content.len(),
+            content_count,
+            terminal_pos.expect("checked terminal POS"),
+        ));
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+
+    let matches = groups
+        .into_iter()
+        .filter_map(|group| {
+            if group.len() < 4 {
+                return None;
+            }
+            let terminal = &group[0].4;
+            if group.iter().any(|item| &item.4 != terminal) {
+                return None;
+            }
+            let mean = group.iter().map(|item| item.3 as f64).sum::<f64>() / group.len() as f64;
+            let variance = group
+                .iter()
+                .map(|item| {
+                    let delta = item.3 as f64 - mean;
+                    delta * delta
+                })
+                .sum::<f64>()
+                / group.len() as f64;
+            let cv = variance.sqrt() / mean;
+            (cv <= 0.25).then_some((group, cv))
+        })
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let related_lines = matches
+        .iter()
+        .flat_map(|(group, _)| group.iter().map(|item| item.0))
+        .collect::<Vec<_>>();
+    let related = related_lines
+        .iter()
+        .map(|line| format!("L{line}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let first_group = &matches[0].0;
+    let first = &first_group[0];
+    let last = &first_group[first_group.len() - 1];
+    let excerpt = raw_lines
+        .get(first.0 - 1)
+        .copied()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(40)
+        .collect::<String>();
+    let mut finding = Finding::new(
+        first.0,
+        "uniform_bullet_structure",
+        excerpt,
+        "info",
+        format!(
+            "4項目以上の箇条書きで文末品詞が「{}」に揃い、内容語数の変動係数が{:.3}（閾値0.25以下）。形と長さが均一すぎないか確認する実験的検出。対応箇所: {related}",
+            first.4, matches[0].1
+        ),
+    );
+    finding.related_lines = Some(related_lines);
+    finding.span = make_span(&raw_lines, first.0, first.1, last.0, last.2);
+    Ok(vec![finding])
 }

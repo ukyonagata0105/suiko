@@ -83,7 +83,7 @@ struct LintArgs {
     /// ジャンル別の校正済み閾値を適用する
     #[arg(long, value_enum)]
     genre: Option<Genre>,
-    /// 未校正または無反応の実験的検出器も有効にする
+    /// 未校正または無反応の実験的検出器も有効にする。一部は --genre essay / tech の指定が必要
     #[arg(long)]
     experimental: bool,
     /// 前回の JSON と比較して解消・新規・継続を分類する

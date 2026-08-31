@@ -54,6 +54,8 @@ const ABSTRACT_CONTEXT_NOUNS: &[&str] = &[
     "意思決定",
 ];
 
+const SELF_LABEL_EVALUATIONS: &[&str] = &["必要", "重要", "大切", "面白い", "興味深い"];
+
 #[derive(Clone, Debug)]
 pub(super) struct TokenizedSentence {
     pub(super) line: usize,
@@ -189,12 +191,219 @@ fn token_positions(
     })
 }
 
+struct AggregateHit {
+    line: usize,
+    excerpt: String,
+    span: Option<Span>,
+    related_lines: Vec<usize>,
+}
+
+fn aggregate_pattern_finding(
+    hits: Vec<AggregateHit>,
+    min_hits: usize,
+    category: &str,
+    detail: impl FnOnce(usize, &str) -> String,
+) -> Vec<Finding> {
+    if hits.len() < min_hits {
+        return Vec::new();
+    }
+    let count = hits.len();
+    let mut related_lines = hits
+        .iter()
+        .flat_map(|hit| hit.related_lines.iter().copied())
+        .collect::<Vec<_>>();
+    related_lines.sort_unstable();
+    related_lines.dedup();
+    let related = related_lines
+        .iter()
+        .map(|line| format!("L{line}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let first = hits.into_iter().next().expect("hits is not empty");
+    let mut finding = Finding::new(
+        first.line,
+        category,
+        first.excerpt,
+        "info",
+        detail(count, &related),
+    );
+    finding.related_lines = Some(related_lines);
+    finding.span = first.span;
+    vec![finding]
+}
+
+pub(super) fn self_labeling_repetition_findings(
+    tokenized: &[TokenizedSentence],
+    raw_lines: &[&str],
+) -> Vec<Finding> {
+    let hits = tokenized
+        .iter()
+        .filter_map(|sentence| {
+            let (byte_start, byte_end) = self_labeling_span(&sentence.tokens)?;
+            Some(AggregateHit {
+                line: sentence.line,
+                excerpt: sentence.excerpt(byte_start, byte_end),
+                span: sentence.span(raw_lines, byte_start, byte_end),
+                related_lines: vec![sentence.line],
+            })
+        })
+        .collect::<Vec<_>>();
+    aggregate_pattern_finding(hits, 3, "self_labeling_repetition", |count, related| {
+        format!(
+            "評価語を含む「〜のは」型の主題提示が{}回ある（閾値3回以上）。重要点の提示は談話を導く働きもあるため、使用自体ではなく文書内の反復だけを確認する実験的検出。対応箇所: {related}",
+            count
+        )
+    })
+}
+
+fn self_labeling_span(tokens: &[Morpheme]) -> Option<(usize, usize)> {
+    let tokens = significant_tokens(tokens);
+    let start = tokens.first()?.byte_start;
+
+    for index in 1..tokens.len().saturating_sub(1) {
+        if index > 7 {
+            break;
+        }
+        if tokens[index].surface != "の" || tokens[index + 1].surface != "は" {
+            continue;
+        }
+        let prefix = &tokens[..index];
+        let evaluation = prefix
+            .iter()
+            .rev()
+            .take(4)
+            .any(|token| SELF_LABEL_EVALUATIONS.contains(&token.dictionary_form()));
+        let avoid_desire = prefix
+            .iter()
+            .any(|token| token.dictionary_form() == "避ける")
+            && prefix.iter().any(|token| token.dictionary_form() == "たい");
+        if evaluation || avoid_desire {
+            return Some((start, tokens[index + 1].byte_end));
+        }
+    }
+
+    None
+}
+
+pub(super) fn negative_listing_findings(
+    tokenized: &[TokenizedSentence],
+    raw_lines: &[&str],
+) -> Vec<Finding> {
+    let hits = tokenized
+        .windows(3)
+        .filter_map(|window| {
+            let [first, second, assertion] = window else {
+                return None;
+            };
+            if !copular_negation(&first.tokens)
+                || !copular_negation(&second.tokens)
+                || !short_affirmative(&assertion.tokens)
+                || blank_line_between(first.line, second.line, raw_lines)
+                || blank_line_between(second.line, assertion.line, raw_lines)
+            {
+                return None;
+            }
+
+            let start = significant_tokens(&first.tokens).first()?.byte_start;
+            let end = significant_tokens(&assertion.tokens).last()?.byte_end;
+            let span = make_span(
+                raw_lines,
+                first.line,
+                first.line_byte_start + start,
+                assertion.line,
+                assertion.line_byte_start + end,
+            );
+            Some(AggregateHit {
+                line: first.line,
+                excerpt: [first, second, assertion]
+                    .map(|sentence| abbreviated(&sentence.raw_text, 28))
+                    .join("。"),
+                span,
+                related_lines: vec![first.line, second.line, assertion.line],
+            })
+        })
+        .collect::<Vec<_>>();
+    aggregate_pattern_finding(hits, 1, "negative_listing", |count, related| {
+        format!(
+            "否定を2文続けてから短い肯定文へ焦点を移す並びが{}箇所ある。対比や選択肢の絞り込みとして意図した修辞かを確認する実験的検出。対応箇所: {related}",
+            count
+        )
+    })
+}
+
+fn abbreviated(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let mut abbreviated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        abbreviated.push('…');
+    }
+    abbreviated
+}
+
+fn copular_negation(tokens: &[Morpheme]) -> bool {
+    let tokens = significant_tokens(tokens)
+        .iter()
+        .filter(|token| !matches!(token.pos(0), "記号" | "補助記号" | "空白"))
+        .collect::<Vec<_>>();
+    let Some(negative) = tokens.iter().rposition(|token| {
+        token.dictionary_form() == "ない"
+            || (token.dictionary_form() == "ぬ" && token.surface == "ん")
+    }) else {
+        return false;
+    };
+    if tokens.len().saturating_sub(negative) > 3 {
+        return false;
+    }
+    tokens[..negative].windows(2).rev().take(5).any(|pair| {
+        matches!(pair[0].surface.as_str(), "で" | "じゃ")
+            && matches!(pair[1].surface.as_str(), "は" | "も")
+    })
+}
+
+fn short_affirmative(tokens: &[Morpheme]) -> bool {
+    let content = significant_tokens(tokens)
+        .iter()
+        .filter(|token| !matches!(token.pos(0), "記号" | "補助記号" | "空白"))
+        .collect::<Vec<_>>();
+    !content.is_empty()
+        && content.len() <= 8
+        && !content.iter().any(|token| {
+            token.dictionary_form() == "ない"
+                || (token.dictionary_form() == "ぬ" && token.surface == "ん")
+        })
+}
+
+fn blank_line_between(first_line: usize, second_line: usize, raw_lines: &[&str]) -> bool {
+    if second_line <= first_line + 1 {
+        return false;
+    }
+    raw_lines[first_line..second_line - 1]
+        .iter()
+        .any(|line| line.trim().is_empty())
+}
+
 pub(super) fn translationese_morph_findings(
     tokenized: &[TokenizedSentence],
     raw_lines: &[&str],
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     for (sentence, index, token) in token_positions(tokenized) {
+        if let Some((byte_start, byte_end, pattern)) =
+            abstract_motsu_candidate(&sentence.tokens, index)
+        {
+            let mut finding = Finding::new(
+                sentence.line,
+                "translationese_morph",
+                sentence.excerpt(byte_start, byte_end),
+                "info",
+                format!(
+                    "品詞列マッチ: {pattern}。抽象的な内容と「持つ」の組み合わせを読み直す候補"
+                ),
+            );
+            finding.span = sentence.span(raw_lines, byte_start, byte_end);
+            findings.push(finding);
+        }
+
         let Some(particle) = sentence.tokens.get(index + 1) else {
             continue;
         };
@@ -231,6 +440,113 @@ pub(super) fn translationese_morph_findings(
         }
     }
     findings
+}
+
+fn abstract_motsu_candidate(
+    tokens: &[Morpheme],
+    index: usize,
+) -> Option<(usize, usize, &'static str)> {
+    let first = tokens.get(index)?;
+    let second = tokens.get(index + 1)?;
+    let third = tokens.get(index + 2);
+
+    if second.pos(0) == "助詞" && second.surface == "を" {
+        let third = third?;
+        if third.pos(0) == "動詞" && third.dictionary_form() == "持つ" {
+            if first.pos(0) == "名詞" && first.dictionary_form() == "意味" {
+                return Some((first.byte_start, third.byte_end, "意味+を+持つ"));
+            }
+            if first.pos(0) == "助詞" && first.surface == "か" {
+                return Some((first.byte_start, third.byte_end, "疑問節末のか+を+持つ"));
+            }
+        }
+    }
+
+    if first.surface == "持てる" && second.pos(0) == "名詞" && second.dictionary_form() == "未決"
+    {
+        return Some((first.byte_start, second.byte_end, "持てる+未決"));
+    }
+
+    if first.surface == "持て" && second.surface == "る" {
+        let third = third?;
+        if third.pos(0) == "名詞" && third.dictionary_form() == "未決" {
+            return Some((first.byte_start, third.byte_end, "持てる+未決"));
+        }
+    }
+
+    None
+}
+
+pub(super) fn technical_ambiguity_findings(
+    tokenized: &[TokenizedSentence],
+    raw_lines: &[&str],
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for sentence in tokenized {
+        for (index, token) in sentence.tokens.iter().enumerate() {
+            if matches!(token.surface.as_str(), "この" | "その" | "あの")
+                && sentence
+                    .tokens
+                    .get(index + 1)
+                    .is_some_and(|next| next.pos(0) == "名詞" && next.dictionary_form() == "こと")
+            {
+                let predicate_count = sentence.tokens[..index]
+                    .iter()
+                    .filter(|candidate| candidate.pos(0) == "動詞")
+                    .count();
+                if predicate_count >= 2 {
+                    let end = sentence.tokens[index + 1].byte_end;
+                    let mut finding = Finding::new(
+                        sentence.line,
+                        "demonstrative_reference",
+                        sentence.excerpt(token.byte_start, end),
+                        "info",
+                        format!(
+                            "品詞列マッチ: 同じ文の前方に動詞が{predicate_count}個あり、その後に「{}こと」がある。指示先を読み直す候補",
+                            token.surface
+                        ),
+                    );
+                    finding.span = sentence.span(raw_lines, token.byte_start, end);
+                    findings.push(finding);
+                }
+            }
+
+            if token.surface != "それぞれ" {
+                continue;
+            }
+            let preceding_separator = sentence.tokens[..index]
+                .iter()
+                .rposition(is_enumeration_separator);
+            if preceding_separator.is_none()
+                || sentence.tokens[index + 1..]
+                    .iter()
+                    .any(is_enumeration_separator)
+            {
+                continue;
+            }
+            let separator = preceding_separator.expect("separator exists");
+            let start = sentence.tokens[separator.saturating_sub(1)].byte_start;
+            let end = sentence.tokens[index + 1..]
+                .iter()
+                .find(|candidate| candidate.pos(0) == "動詞")
+                .map_or(token.byte_end, |candidate| candidate.byte_end);
+            let mut finding = Finding::new(
+                sentence.line,
+                "respectively_scope",
+                sentence.excerpt(start, end),
+                "info",
+                "品詞列マッチ: 列挙の後に「それぞれ」があり、後方に対応する列挙がない。どの要素を一つずつ扱うか読み直す候補",
+            );
+            finding.span = sentence.span(raw_lines, start, end);
+            findings.push(finding);
+        }
+    }
+    findings
+}
+
+fn is_enumeration_separator(token: &Morpheme) -> bool {
+    (token.pos(0) == "助詞" && matches!(token.surface.as_str(), "と" | "や"))
+        || matches!(token.surface.as_str(), "、" | "，" | ",")
 }
 
 /// 機械的に安全な唯一の縮約: 「〜することができる」→「〜できる」。

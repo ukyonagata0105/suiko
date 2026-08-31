@@ -132,6 +132,13 @@ pub fn is_code_annotation_line(line: &str) -> bool {
     bytes.len() >= 3 && bytes[0] == b'#' && bytes[1].is_ascii_uppercase() && bytes[2] == b' '
 }
 
+fn is_reference_heading(title: &str) -> bool {
+    matches!(
+        title.trim().to_ascii_lowercase().as_str(),
+        "参考文献" | "引用文献" | "references" | "bibliography"
+    )
+}
+
 pub fn mask_markdown_structure(text: &str) -> String {
     mask_markdown(text, false).0
 }
@@ -156,6 +163,7 @@ fn mask_markdown(text: &str, preserve_headings: bool) -> (String, MaskStats) {
     let mut stats = MaskStats::default();
     let mut fence: Option<(char, usize)> = None;
     let mut front_matter = false;
+    let mut reference_section_level = None;
 
     for (index, line) in text.split('\n').enumerate() {
         let trimmed = line.trim_start();
@@ -194,6 +202,22 @@ fn mask_markdown(text: &str, preserve_headings: bool) -> (String, MaskStats) {
         }
         if let Some((ch, len)) = fence_run.filter(|(_, len)| *len >= 3) {
             fence = Some((ch, len));
+            masked.push(String::new());
+            continue;
+        }
+
+        let current_heading = heading(line);
+        if let Some((level, title)) = &current_heading {
+            if is_reference_heading(title) {
+                reference_section_level = Some(*level);
+            } else if reference_section_level.is_some_and(|reference| *level <= reference) {
+                reference_section_level = None;
+            }
+        }
+        if reference_section_level.is_some() && current_heading.is_none() {
+            if !trimmed.is_empty() {
+                stats.reference_lines += 1;
+            }
             masked.push(String::new());
             continue;
         }

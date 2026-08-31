@@ -1,0 +1,4 @@
+interface:
+  display_name: "Home Suiko"
+  short_description: "Diagnose and improve natural, readable Japanese prose"
+  default_prompt: "Use $home-suiko to diagnose and improve this Japanese document while preserving facts and intentional style."

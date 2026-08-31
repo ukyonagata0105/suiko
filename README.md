@@ -10,14 +10,14 @@
 cargo install suiko
 ```
 
-名前は、文章を練り直す日本語の「推敲」から取りました。バイナリ、crate、Agent Skillの名前を `suiko` に統一しています。形態素辞書はバイナリへ埋め込まれるため、実行時に辞書やモデルをダウンロードしません。
+名前は、文章を練り直す日本語の「推敲」から取りました。バイナリとcrateの名前は `suiko`、Agent Skillの名前は `home-suiko` です。形態素辞書はバイナリへ埋め込まれるため、実行時に辞書やモデルをダウンロードしません。
 
 ## 特徴
 
 - `lint`: 禁止語、翻訳調、定型的な対比、リズム、段落構造、語彙、英語統語の疑いを検出
 - `outline`: 見出し、段落の先頭文、箇条書きを抽出して論旨を俯瞰
 - `terms`: 略語、カタカナ複合語、固有名詞候補と初出時の説明手掛かりを抽出
-- Markdownのfront matter、コードフェンス、インラインコード、リンクURL、埋め込み引用行、表、HTMLタグとコメント、参考文献リスト行（`[1] …`、`[^1]: …`）、コード注釈行（`#A …`）をマスク（抑制した行数は`stats.masking`に出力）
+- Markdownのfront matter、コードフェンス、インラインコード、リンクURL、埋め込み引用行、表、HTMLタグとコメント、参考文献リスト行（`[1] …`、`[^1]: …`）、「参考文献」「引用文献」「References」「Bibliography」見出し以下の行、コード注釈行（`#A …`）をマスク（抑制した行数は`stats.masking`に出力）
 - `essay` / `tech` / `business` のジャンル別閾値
 - 修正前JSONとの `resolved` / `new` / `persisting` 比較
 - 自然度とは分離したopt-inの読解負荷レーン
@@ -53,10 +53,10 @@ Rustを入れずに使う場合は、[GitHub Releases](https://github.com/nwiizo
 
 ```sh
 # 例: macOS (Apple Silicon)
-curl -LO https://github.com/nwiizo/suiko/releases/download/v0.3.3/suiko-v0.3.3-aarch64-apple-darwin.tar.gz
-shasum -a 256 -c suiko-v0.3.3-aarch64-apple-darwin.tar.gz.sha256   # 事前に.sha256も取得した場合
-tar xzf suiko-v0.3.3-aarch64-apple-darwin.tar.gz
-./suiko-v0.3.3-aarch64-apple-darwin/suiko --version
+curl -LO https://github.com/nwiizo/suiko/releases/download/v0.3.4/suiko-v0.3.4-aarch64-apple-darwin.tar.gz
+shasum -a 256 -c suiko-v0.3.4-aarch64-apple-darwin.tar.gz.sha256   # 事前に.sha256も取得した場合
+tar xzf suiko-v0.3.4-aarch64-apple-darwin.tar.gz
+./suiko-v0.3.4-aarch64-apple-darwin/suiko --version
 ```
 
 macOSでは、ダウンロードしたバイナリに検疫属性（quarantine）が付くため初回実行がGatekeeperに止められます。`xattr -d com.apple.quarantine <suikoのパス>` で解除するか、確認ダイアログを避けたい場合は `cargo install suiko` で自分のマシンでビルドしてください（署名の出所が自分になるため、以降の確認が出ません）。
@@ -67,6 +67,9 @@ macOSでは、ダウンロードしたバイナリに検疫属性（quarantine�
 # 自然さを診断
 suiko lint draft.md
 suiko lint draft.md --genre tech --json
+
+# 校正中の実験的な検出も加える
+suiko lint draft.md --genre essay --experimental --json
 
 # 読解負荷の指さしも追加
 suiko lint draft.md --reading-load --json
@@ -115,7 +118,9 @@ printf '重要なのは、結論です。\n' | suiko lint - --json
 
 同じ表現が一行に複数ある場合も、findingごとに別の `span` が付きます。`low_burstiness` や語彙多様性のような文書全体の指標は特定の範囲を指さないため、`span` を省略します。列は結合文字も1と数えるUnicode scalar単位で、書記素クラスタではありません。
 
-機械的に安全と確認した縮約（現在は「〜することができる」→「〜できる」と、サ変名詞に隣接する「〜を行う」→「〜する」の2系統）には `suggestion`（`span`、`preimage`、`replacement`）が付きます。`preimage` が原文と一致する場合に限って適用できる契約で、Suiko自身はファイルを書き換えません。意味が変わりうるパターン（「することはできない」等）には候補を出しません。
+機械的に安全と確認した縮約（現在は「〜することができる」→「〜できる」と、サ変名詞に隣接する「〜を行う」→「〜する」の2系統）には `suggestion`（`span`、`preimage`、`replacement`）が付きます。`preimage` が原文と一致する場合に限って適用できる条件で、Suiko自身はファイルを書き換えません。意味が変わりうるパターン（「することはできない」等）には候補を出しません。
+
+`translationese_morph`は、形態素列に一致した読み直し候補を列挙します。たとえば抽象的な内容と「持つ」の組み合わせは、`意味+を+持つ`、`疑問節末のか+を+持つ`、`持てる+未決`だけを対象にします。「傘を持つ」「停止権限を持つ」「疑問を持つこと」は対象外です。findingは修正の要否を決めず、AIまたは人が周辺の文脈を読んで判断します。
 
 `--format github` はfindingをGitHub Actionsのworkflowコマンド（`::warning file=...,line=...,col=...::`）として出力し、PRの該当行へ注釈を付けられます。severityは `critical→error` / `warn→warning` / `info→notice` に対応します。`--format sarif` はSARIF 2.1.0を出力し、`columnKind: unicodeCodePoints` を宣言して `span` の列をそのまま使います（severityは `error` / `warning` / `note`）。
 
@@ -130,6 +135,24 @@ printf '重要なのは、結論です。\n' | suiko lint - --json
 `--baseline` には前回の `lint --json` 出力（単一オブジェクトまたは配列）をそのまま渡せます。レコードは `file` 文字列の完全一致で対応づけ、改名は推測しません。baselineにないファイルは全findingを新規として `baseline.file_status = "added"` で示し、baselineにあって今回対象にないファイルはstderrへ警告します。genre、`--experimental`、Suikoバージョンが一致しない場合は実行エラーになります。`antithesis_repetition` や `low_burstiness` のような文書単位のfindingは、文章の言い換えで抜粋が変わっても同一カテゴリとして継続扱いします。
 
 `antithesis_repetition` と `repeated_sentence_lead` は文書単位の集約findingです。同じ反復キーは1件にまとめ、全対象行を `related_lines` で示します。finding件数は「一致した箇所の数」ではなく「反復状態の数」を意味します。文頭のラベル+コロン（用語集やFAQの定型フィールド）は、散文の無意識な反復と区別して `detail` に明記します。
+
+### `--experimental`で反復と指示範囲を確認する
+
+次の5カテゴリは、形態素列から観測できる反復や指示範囲を示す実験的なfindingです。文法的な誤りや文章の優劣を判定するものではありません。いずれもseverityは`info`で、通常の`lint`では出力されません。AIが書いたかどうかは判定せず、読み直す箇所を列挙するために使います。
+
+| category | 検出する状態 | 対象外になる例 |
+|---|---|---|
+| `self_labeling_repetition` | `必要なのは`、`面白いのは`、`避けたいのは`など、評価語を含む「〜のは」型の主題提示が文書内に3回以上ある | 1〜2回だけの使用、`正直に言うと`など書き手の立場を示す表現 |
+| `negative_listing` | 同じ段落で`Xではない。Yでもない。Zだ。`のように、否定が2文続いたあと形態素8個以下の肯定文へ焦点を移す | 空行をまたぐ3文、長い説明へ続く否定文 |
+| `uniform_bullet_structure` | `--genre essay`を指定し、4項目以上の連続した箇条書きで文末品詞がすべて同じになり、内容語数の変動係数が0.25以下になる | ジャンル未指定、`tech`、`business`、3項目以下、文末品詞や内容語数のばらつきが大きい箇条書き |
+| `demonstrative_reference` | `--genre tech`を指定し、同じ文の前方に動詞が2個以上ある位置で`このこと`、`そのこと`、`あのこと`を使う | 前方の動詞が1個以下、別の文で指示対象を受ける場合 |
+| `respectively_scope` | `--genre tech`を指定し、列挙の後に`それぞれ`があり、後方に対応する列挙がない | `R、G、Bは、それぞれRed、Green、Blueに対応する`のように両側の列挙が形態素上で見える場合 |
+
+反復を扱う3カテゴリは文書内の該当箇所を1件へまとめ、対象行を`related_lines`で返します。`self_labeling_repetition`は「〜のは」型だけを扱い、書き手の立場を示す表現は混ぜません。`negative_listing`は意図的な対比にも使えるため、誤りではなく修辞を確認するきっかけとして示します。`uniform_bullet_structure`はMarkdownのコードフェンスと引用内を検査せず、明示的に`essay`を選んだ場合だけ出力します。文末品詞と内容語数の近さを測るもので、項目間の意味関係や構文上の並列性までは判定しません。
+
+技術文書向けの2カテゴリは、読者が複数の解釈で迷う可能性がある箇所のうち、形態素列で位置を示せる指示語と`それぞれ`の範囲に絞っています。`それぞれ`は語を加えるだけで解釈が一つに決まるとは限りません。このためSuikoは曖昧さを断定せず、AIまたは人が前後関係を確認する候補だけを返します。
+
+主語の省略、修飾先、照応先、節をまたぐ並列関係は、形態素列だけでは正誤を決められないためfindingにしません。
 
 終了コードは次のとおりです。
 
@@ -178,27 +201,23 @@ reason = "連載固有の見出し"
 
 ## Agent Skill
 
-[`skills/suiko/SKILL.md`](skills/suiko/SKILL.md) は、診断だけでなく文書設計、執筆、findingの採否、再検査までを扱います。Skill対応エージェントでは `$suiko` として利用できます。
+[`skills/home-suiko/SKILL.md`](skills/home-suiko/SKILL.md) は、診断だけでなく文書設計、執筆、findingの採否、再検査までを扱います。Skill対応エージェントでは `$home-suiko` として利用できます。
 
 基本原則は「検出は機械、判断は文脈」です。findingを一律に消すのではなく、各項目を「直した」または「残す（理由）」へ分類します。
 
-CLIとAgent Skillは別々に導入します。上記のビルド手順はCLIだけを、次のコマンドは`suiko` Skillだけを導入します。
+CLIとAgent Skillは別々に導入します。上記のビルド手順はCLIだけを、次のコマンドは`home-suiko` Skillだけを導入します。
 
 ```sh
-npx skills add https://github.com/nwiizo/suiko --skill suiko
+npx skills add https://github.com/nwiizo/suiko --skill home-suiko
 ```
 
 GitHub CLI（`gh skill`、preview）でも導入できます。既定では最新のリリースタグが導入され、スコープは`project`（現在のリポジトリ内）です。ユーザー全体で使う場合は`--scope user`を付けます。
 
 ```sh
-gh skill install nwiizo/suiko suiko --agent claude-code
+gh skill install nwiizo/suiko home-suiko --agent claude-code
 ```
 
-導入後は`suiko --version`でCLIを確認し、Skill対応エージェントでは`$suiko`を指定します。Skillを先に導入した環境でCLIがない場合、Skillは`cargo install suiko`でCLIの導入を試み、`cargo`がない環境では導入手順の案内と同梱の手動チェックリストによる診断へ切り替えます。
-
-SkillはNode.js 20.18以降とnpmが使える場合、[@textlint-ja/textlint-rule-preset-ai-writing](https://github.com/textlint-ja/textlint-rule-preset-ai-writing)も別の検査として実行します。同梱スクリプトが固定版をnpmの一時環境で実行するため、対象プロジェクトの依存関係やtextlint設定は変更しません。自動修正は行わず、取得できない環境ではSuikoだけで続行します。
-
-両者には定型表現、誇張表現、箇条書き、コロン接続、冗長表現の一部で重なりがあります。textlintはMarkdown AST上の表層・構造パターン、SuikoはSudachiの形態素列、文書内統計、baseline比較を担当します。同じ箇所への指摘は一つの修正として判断し、textlintの件数をSuikoの自然度スコアやbaselineへ加算しません。`abstract_metaphor`は、preset 1.7.0に専用パターンがない領域を補います。
+導入後は`suiko --version`でCLIを確認し、Skill対応エージェントでは`$home-suiko`を指定します。Skillを先に導入した環境でCLIがない場合、Skillは`cargo install suiko`でCLIの導入を試み、`cargo`がない環境では導入手順の案内と同梱の手動チェックリストによる診断へ切り替えます。
 
 ## 対象範囲
 
@@ -210,7 +229,7 @@ Suikoは一般校正の網羅ではなく、均一なリズムや翻訳調、日
 
 | fixture | 通常 | `--experimental` |
 |---|---:|---:|
-| AI的な文書 | 21 | 30 |
+| AI的な文書 | 19 | 28 |
 | 自然な文書 | 0 | 0 |
 
 形態素解析にはsudachi.rsとSudachiDict core（版とSHA-256を`build.rs`で固定）を使います。形態素の分割結果そのものではなく、公開するJSON形状と校正フィクスチャに対するカテゴリ別の検出結果を回帰テストで固定します。

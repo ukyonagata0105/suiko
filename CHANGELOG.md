@@ -4,10 +4,19 @@ Suikoの公開リリースを記録する。日付はJSTで、各項目は実測
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-08-31
+
+### 追加
+
+- `--experimental`に、評価語を含む「〜のは」型の反復を示す`self_labeling_repetition`、否定2文から短い肯定文へ焦点を移す並びを示す`negative_listing`、essayで形態素上の揃った箇条書きを示す`uniform_bullet_structure`を追加した。いずれも文章の良否を決めず、読み直す箇所を`info`で列挙する
+- `--genre tech --experimental`に、複数の動作後にある`このこと`、`そのこと`、`あのこと`を示す`demonstrative_reference`と、前方だけに列挙がある`それぞれ`を示す`respectively_scope`を追加した。解釈は決めずに形態素列の候補だけを列挙する
+- `translationese_morph`に、`意味+を+持つ`、`疑問節末のか+を+持つ`、`持てる+未決`の3つの形態素列を追加した。自然な「傘を持つ」「停止権限を持つ」「疑問を持つこと」は対象外とし、修正の要否はAIまたは人が文脈から判断する
+
 ### 修正
 
 - `english_syntax_inanimate_subject`と`inanimate_subject_morph`が同じ行の同一または包含範囲を示す場合、形態素側だけを利用者向けfindingとして残すようにした
 - `double_negative`で、最初の否定が直後の名詞を修飾し、その名詞に`は`、`が`、`を`、`も`が続く場合は、後続述語の否定と別の対象に掛かるものとして除外した
+- 「参考文献」「引用文献」「References」「Bibliography」のMarkdown見出し以下を、同じ階層以上の次の見出しまで本文外としてマスクするようにした。番号のない書誌行が読解負荷のfindingになる問題を防ぐ
 
 ### 変更
 
@@ -15,16 +24,16 @@ Suikoの公開リリースを記録する。日付はJSTで、各項目は実測
 - SudachiDictの取得と検証を`build.rs`へ一本化し、重複していた辞書取得用シェルスクリプトとCIの事前取得手順を削除した
 - sudachi.rsとSudachiDictの更新確認からPythonを除き、`gh`、または`curl`と`jq`で確認するようにした
 - `cargo coupling`と`similarity-rs`で全Rustコードを解析し、見出し解析、出力形式ごとのfinding走査、形態素トークン走査、評価ファイルの読み込み処理にあった重複を整理した
+- Agent Skillの名前と配置を`suiko`から`home-suiko`へ変更し、README、導入確認スクリプト、評価テストの参照先を揃えた
+- 抽象的な「持つ」は現代日本語で広く使われるため、`を持つ(こと|存在)`という広い文字列規則を削除した。対象を上記3形態素列へ限定し、手引きも一律な翻訳調判定ではなく読み直し候補の説明へ改めた
 
-互換性: 公開JSONの形は不変。同一範囲の無生物主語と、別の対象へ掛かる否定のfindingが減るため、既存の件数とbaseline比較結果が変わる場合がある。評価用の外部文書取得コマンドは`cargo run --features evaluation --bin suiko-eval -- fetch eval/sources.toml`へ変わる。
+互換性: 公開JSONの形は不変。新しい5カテゴリは`--experimental`指定時だけ出力する。`translationese_morph`の候補追加、重複findingの抑制、否定の係り先判定、参考文献のマスクによって既存の件数とbaseline比較結果が変わる場合がある。旧版のbaselineは版の照合で拒否されるため、v0.3.4で作り直す必要がある。Agent Skillは`home-suiko`として導入し直す。評価用の外部文書取得コマンドは`cargo run --features evaluation --bin suiko-eval -- fetch eval/sources.toml`へ変わる。
 
 ## [0.3.3] - 2026-08-25
 
 ### 追加
 
 - 抽象的な対象を「地図」「羅針盤」などの名詞で説明している箇所を、具体的な判断対象・判断基準・効果へ書き換える候補として示す `abstract_metaphor` を追加した。形態素と周辺文脈を使い、字義どおりの用例を対象外にする。severityは`info`で、ラベル付き14サンプルでは検出対象5/5、除外対象0/9だった
-- Agent Skillに、プロジェクトで設定済みの`@textlint-ja/textlint-rule-preset-ai-writing`を優先して実行し、未設定時は同梱スクリプトから固定バージョンを実行する補助検査を追加した。結果はSuikoの点数・件数・baselineへ混ぜず、自動修正もしない
-
 互換性: 公開JSONの形は不変。通常実行の終了コードも変わらない。`--fail-on info`を指定した場合は、新しい`abstract_metaphor`によって終了コードが変わることがある。旧版のbaselineはSuikoのバージョン照合で拒否されるため、v0.3.3で作り直す必要がある。
 
 ## [0.3.2] - 2026-08-21
