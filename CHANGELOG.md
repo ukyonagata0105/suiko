@@ -4,6 +4,12 @@ Suikoの公開リリースを記録する。日付はJSTで、各項目は実測
 
 ## [Unreleased]
 
+### 追加
+
+- `--genre tech --experimental`に、テストやCIの成功状態を色で表す言い回しと、ソフトウェアの公開を物流語で表す言い回しを示す`technical_jargon_metaphor`を追加した。表示色と物理配送を示す語が同じ文にある場合は除外し、修正候補を付けない`info`として返す
+
+互換性: 公開JSONのキーは不変。`--genre tech --experimental`では`technical_jargon_metaphor`が新たに出力される場合がある。
+
 ## [0.3.4] - 2026-08-31
 
 ### 追加

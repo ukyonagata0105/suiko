@@ -637,6 +637,84 @@ fn technical_ambiguity_candidates_require_tech_and_experimental_mode() {
 }
 
 #[test]
+fn technical_jargon_metaphors_require_tech_and_experimental_mode() {
+    let morphology = Morphology::new().expect("initialize morphology");
+    let positive = concat!(
+        "用意されたテストはすべて緑になります。\n",
+        "検査結果は緑のままです。\n",
+        "CIを緑に戻します。\n",
+        "ビルドはグリーンです。\n",
+        "既存テストが緑でも、前提が変われば再検証します。\n",
+        "このコードを出荷します。\n",
+        "この修正を出荷します。\n",
+        "どの状態なら出荷を止めるかを決めます。\n",
+        "人が決めるのは、どの状態なら出荷を止めるかです。\n",
+    );
+    let contrast = concat!(
+        "テスト結果のアイコンが緑になります。\n",
+        "ダッシュボードの表示を緑にします。\n",
+        "工場から端末を出荷します。\n",
+        "出荷前に製品を検品します。\n",
+        "緑色の線が成功したテストを表します。\n",
+        "バーコードのラベルを出荷します。\n",
+        "壁は緑ですが、テストは来週から始まります。\n",
+        "状態が悪ければ、出荷を止めると決めます。\n",
+        "出荷手順を修正します。\n",
+        "コンテストのテーマカラーは緑です。\n",
+    );
+
+    let report = lint::analyze(positive, &morphology, Some("tech"), true).expect("analyze text");
+    let findings = report
+        .findings
+        .iter()
+        .filter(|finding| finding.category == "technical_jargon_metaphor")
+        .collect::<Vec<_>>();
+    assert_eq!(findings.len(), 9);
+    assert!(findings.iter().all(|finding| finding.severity == "info"));
+    assert!(findings.iter().all(|finding| finding.suggestion.is_none()));
+
+    let literal = lint::analyze(contrast, &morphology, Some("tech"), true).expect("analyze text");
+    assert!(
+        literal
+            .findings
+            .iter()
+            .all(|finding| finding.category != "technical_jargon_metaphor")
+    );
+
+    let trailing_clause = lint::analyze(
+        "このコードを出荷したあと、担当者はレビューを実施します。\n",
+        &morphology,
+        Some("tech"),
+        true,
+    )
+    .expect("analyze trailing clause");
+    let excerpt = &trailing_clause
+        .findings
+        .iter()
+        .find(|finding| finding.category == "technical_jargon_metaphor")
+        .expect("technical jargon metaphor")
+        .excerpt;
+    assert!(!excerpt.contains("レビュー"), "excerpt: {excerpt}");
+
+    for (genre, experimental) in [
+        (Some("tech"), false),
+        (Some("essay"), true),
+        (Some("business"), true),
+        (None, true),
+    ] {
+        let disabled = lint::analyze(positive, &morphology, genre, experimental)
+            .expect("analyze disabled mode");
+        assert!(
+            disabled
+                .findings
+                .iter()
+                .all(|finding| finding.category != "technical_jargon_metaphor"),
+            "genre={genre:?}, experimental={experimental}"
+        );
+    }
+}
+
+#[test]
 fn abstract_metaphor_morph_distinguishes_figurative_and_literal_contexts() {
     let body = concat!(
         "この方針は実装判断の羅針盤になる。\n",

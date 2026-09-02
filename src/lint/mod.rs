@@ -38,6 +38,7 @@ const EXPERIMENTAL_CATEGORIES: &[&str] = &[
     "repeated_sentence_mode",
     "respectively_scope",
     "self_labeling_repetition",
+    "technical_jargon_metaphor",
     "uniform_bullet_structure",
     // 2026-08-19の実測(現代人間dev 75文書)で既定ONを支えられず降格した3件。
     // TTRは文書長への構造的依存(50k語の白書でTTR=0.094)、文頭反復は絶対回数
@@ -86,6 +87,7 @@ const RULE_CATEGORIES: &[&str] = &[
     "respectively_scope",
     "self_labeling_repetition",
     "sentence_too_long",
+    "technical_jargon_metaphor",
     "translationese",
     "translationese_morph",
     "uniform_bullet_structure",
@@ -350,6 +352,9 @@ pub fn analyze_with_thresholds(
     findings.extend(morph::negative_listing_findings(&tokenized, &raw_lines));
     if experimental && genre == Some("tech") {
         findings.extend(morph::technical_ambiguity_findings(&tokenized, &raw_lines));
+        findings.extend(morph::technical_jargon_metaphor_findings(
+            &tokenized, &raw_lines,
+        ));
     }
     findings.extend(morph::inanimate_morph_findings(&tokenized, &raw_lines));
     findings.extend(morph::abstract_metaphor_findings(&tokenized, &raw_lines));

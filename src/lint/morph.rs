@@ -56,6 +56,41 @@ const ABSTRACT_CONTEXT_NOUNS: &[&str] = &[
 
 const SELF_LABEL_EVALUATIONS: &[&str] = &["必要", "重要", "大切", "面白い", "興味深い"];
 
+const TECHNICAL_STATUS_NOUNS: &[&str] = &[
+    "テスト",
+    "テスト結果",
+    "検査結果",
+    "CI",
+    "ビルド",
+    "パイプライン",
+];
+
+const DISPLAY_NOUNS: &[&str] = &[
+    "表示",
+    "アイコン",
+    "ランプ",
+    "バッジ",
+    "画面",
+    "背景",
+    "文字",
+    "色",
+    "線",
+];
+
+const SOFTWARE_NOUNS: &[&str] = &[
+    "コード",
+    "機能",
+    "変更",
+    "修正",
+    "ソフトウェア",
+    "API",
+    "実装",
+];
+
+const PHYSICAL_SHIPMENT_NOUNS: &[&str] = &[
+    "工場", "倉庫", "在庫", "配送", "端末", "機器", "製品", "検品",
+];
+
 #[derive(Clone, Debug)]
 pub(super) struct TokenizedSentence {
     pub(super) line: usize,
@@ -547,6 +582,116 @@ pub(super) fn technical_ambiguity_findings(
 fn is_enumeration_separator(token: &Morpheme) -> bool {
     (token.pos(0) == "助詞" && matches!(token.surface.as_str(), "と" | "や"))
         || matches!(token.surface.as_str(), "、" | "，" | ",")
+}
+
+/// テスト結果を色で、ソフトウェアの公開を物流語で表す技術現場の言い回し。
+/// 単語だけでは本来の表示色や物理配送も拾うため、同じ節の対象語と状態語を
+/// 組み合わせ、表示・配送を示す名詞がある文は除外する。
+pub(super) fn technical_jargon_metaphor_findings(
+    tokenized: &[TokenizedSentence],
+    raw_lines: &[&str],
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for sentence in tokenized {
+        if !contains_any(&sentence.tokens, DISPLAY_NOUNS)
+            && let Some((start, end)) = color_status_span(&sentence.tokens)
+        {
+            let mut finding = Finding::new(
+                sentence.line,
+                "technical_jargon_metaphor",
+                sentence.excerpt(start, end),
+                "info",
+                "テストや検査の状態を色で表す技術現場の言い回し。何が通ったか、成功したかを直接書けるか確認してください",
+            );
+            finding.span = sentence.span(raw_lines, start, end);
+            findings.push(finding);
+        }
+
+        if !contains_any(&sentence.tokens, PHYSICAL_SHIPMENT_NOUNS)
+            && let Some((start, end)) = software_shipment_span(&sentence.tokens)
+        {
+            let mut finding = Finding::new(
+                sentence.line,
+                "technical_jargon_metaphor",
+                sentence.excerpt(start, end),
+                "info",
+                "ソフトウェアの公開を物流語で表す技術現場の言い回し。公開、配布、リリースなど具体的な動作を書けるか確認してください",
+            );
+            finding.span = sentence.span(raw_lines, start, end);
+            findings.push(finding);
+        }
+    }
+    findings
+}
+
+fn contains_any(tokens: &[Morpheme], candidates: &[&str]) -> bool {
+    position_any(tokens, candidates).is_some()
+}
+
+fn position_any(tokens: &[Morpheme], candidates: &[&str]) -> Option<usize> {
+    tokens.iter().position(|token| {
+        candidates.contains(&token.dictionary_form())
+            || candidates.contains(&token.surface.as_str())
+    })
+}
+
+fn color_status_span(tokens: &[Morpheme]) -> Option<(usize, usize)> {
+    let subject = position_any(tokens, TECHNICAL_STATUS_NOUNS)?;
+    let color = tokens.iter().position(|token| {
+        matches!(token.dictionary_form(), "緑" | "グリーン")
+            && matches!(token.pos(0), "名詞" | "形状詞")
+    })?;
+    if subject >= color || punctuation_between(tokens, subject, color) {
+        return None;
+    }
+    let following = &tokens[color + 1..];
+    let state = following.iter().take(4).position(|token| {
+        matches!(
+            token.dictionary_form(),
+            "だ" | "です" | "なる" | "戻す" | "保つ" | "まま"
+        ) || token.surface == "で"
+    })? + color
+        + 1;
+    if punctuation_between(tokens, color, state) {
+        return None;
+    }
+    Some((tokens[subject].byte_start, tokens[state].byte_end))
+}
+
+fn software_shipment_span(tokens: &[Morpheme]) -> Option<(usize, usize)> {
+    let shipment = tokens
+        .iter()
+        .position(|token| token.dictionary_form() == "出荷")?;
+    let software = position_any(&tokens[..shipment], SOFTWARE_NOUNS)
+        .filter(|index| !punctuation_between(tokens, *index, shipment));
+    let scoped_state = tokens[..shipment]
+        .iter()
+        .enumerate()
+        .position(|(index, token)| {
+            token.dictionary_form() == "状態"
+                && index > 0
+                && tokens[index - 1].surface == "どの"
+                && !punctuation_between(tokens, index, shipment)
+        });
+    let action = tokens[shipment + 1..]
+        .iter()
+        .position(|token| token.pos(0) == "動詞")
+        .map(|index| index + shipment + 1);
+    if !action.is_some_and(|index| matches!(tokens[index].dictionary_form(), "する" | "止める"))
+    {
+        return None;
+    }
+    let stop = action.filter(|index| tokens[*index].dictionary_form() == "止める");
+    let decide = tokens
+        .iter()
+        .position(|token| token.dictionary_form() == "決める");
+    let context =
+        software.or_else(|| scoped_state.filter(|_| stop.is_some() && decide.is_some()))?;
+    let end = action.expect("shipment action exists");
+    Some((
+        tokens[context.min(shipment)].byte_start,
+        tokens[end].byte_end,
+    ))
 }
 
 /// 機械的に安全な唯一の縮約: 「〜することができる」→「〜できる」。
