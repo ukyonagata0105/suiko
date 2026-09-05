@@ -74,6 +74,7 @@ full では構造と用語も抽出する。
 ```sh
 suiko outline <file> --json
 suiko terms <file> --json
+suiko lexical-audit <file> --reference <lexical-reference.json> --json
 ```
 
 学術稿では、段落第一文と節間の橋を`outline`で確認した後、監査契約を作る。契約がある場合は、契約違反を直すか理由を記録し、提出前に`academic`を実行する。
@@ -117,7 +118,7 @@ finding は疑いであって命令ではない。該当行と周辺文脈を読
 - ジャンル差: [genre-notes.md](references/genre-notes.md)
 - Before/After: [examples.md](references/examples.md)
 
-`outline` では論旨、見出し、反復、節の濃淡、結論の位置を見る。`terms` の `has_gloss_hint` は説明済みという判定ではなく、初出付近に説明マーカーがあるという手掛かりとして扱う。
+`outline` では論旨、見出し、反復、節の濃淡、結論の位置を見る。`terms` の `has_gloss_hint` は説明済みという判定ではなく、初出付近に説明マーカーがあるという手掛かりとして扱う。一般名詞複合語や漢語・和語等の統制を確認するときは`lexical-audit`を使う。新奇複合語とレジスター共起はinfoの確認候補であり、参照資源にない意味上の同義性を推測せず、原稿を書き換えない。
 
 ## 既存の校正工程との境界
 

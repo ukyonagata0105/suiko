@@ -14,6 +14,7 @@ categories = ["command-line-utilities", "text-processing"]
 # SHA-256固定で取得または既存ファイルを検証して埋め込む。
 include = [
     "/src/**",
+    "/data/**",
     "/build.rs",
     "/Cargo.toml",
     "/README.md",

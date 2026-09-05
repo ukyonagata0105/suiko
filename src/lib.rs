@@ -2,6 +2,7 @@ pub mod academic;
 pub mod cli;
 #[cfg(feature = "evaluation")]
 pub mod evaluation;
+pub mod lexical;
 pub mod lint;
 pub mod morphology;
 pub mod outline;

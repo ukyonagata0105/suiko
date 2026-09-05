@@ -101,7 +101,89 @@ fn help_describes_the_analysis_commands() {
         .stdout(predicate::str::contains("lint"))
         .stdout(predicate::str::contains("outline"))
         .stdout(predicate::str::contains("terms"))
+        .stdout(predicate::str::contains("lexical-audit"))
         .stdout(predicate::str::contains("academic"));
+}
+
+#[test]
+fn lexical_audit_reports_novel_compounds_and_explicit_register_variation() {
+    let output = cargo_bin_cmd!("suiko")
+        .args([
+            "lexical-audit",
+            "tests/fixtures/lexical-fire.md",
+            "--reference",
+            "data/lexical-reference-v1.json",
+            "--json",
+        ])
+        .output()
+        .expect("run lexical audit");
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    let findings = json["findings"].as_array().expect("findings");
+    let explanation = findings
+        .iter()
+        .find(|finding| finding["term"] == "説明候補")
+        .expect("説明候補 finding");
+    assert_eq!(explanation["category"], "novel_compound");
+    assert_eq!(explanation["severity"], "info");
+    assert_eq!(explanation["corpus_frequency"], 0);
+    assert_eq!(
+        explanation["components"]
+            .as_array()
+            .expect("components")
+            .len(),
+        2
+    );
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding["category"] == "register_variation")
+    );
+    for category in [
+        "forbidden_match",
+        "orthographic_variation",
+        "register_variation",
+        "novel_compound",
+    ] {
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding["category"] == category),
+            "missing lexical category: {category}"
+        );
+    }
+    assert!(findings.iter().all(|finding| {
+        finding["components"]
+            .as_array()
+            .is_some_and(|components| !components.is_empty())
+    }));
+}
+
+#[test]
+fn lexical_audit_keeps_registered_domain_compounds_silent() {
+    let output = cargo_bin_cmd!("suiko")
+        .args([
+            "lexical-audit",
+            "tests/fixtures/lexical-silent.md",
+            "--reference",
+            "data/lexical-reference-v1.json",
+            "--json",
+        ])
+        .output()
+        .expect("run lexical audit");
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    let findings = json["findings"].as_array().expect("findings");
+    assert!(
+        findings.is_empty(),
+        "registered compounds and unregistered semantic similarities must stay silent"
+    );
+    for term in ["地域公共交通計画", "目標指標", "公共交通人口カバー率"] {
+        assert!(
+            !findings.iter().any(|finding| finding["term"] == term),
+            "{term}"
+        );
+    }
 }
 
 #[test]
@@ -1114,6 +1196,30 @@ fn lint_accepts_standard_input() {
     let json: Value = serde_json::from_slice(&output.stdout).expect("valid JSON output");
     assert_eq!(json["file"], "-");
     assert_eq!(json["findings"][0]["category"], "forbidden_phrase");
+}
+
+#[test]
+fn nokoru_is_a_forbidden_phrase() {
+    let output = cargo_bin_cmd!("suiko")
+        .args(["lint", "-", "--json"])
+        .write_stdin("検証すべき仮説として残る。\n")
+        .output()
+        .expect("run suiko lint with nokoru");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("valid JSON output");
+    let finding = json["findings"]
+        .as_array()
+        .expect("findings array")
+        .iter()
+        .find(|finding| finding["category"] == "forbidden_phrase")
+        .expect("nokoru finding");
+    assert!(
+        finding["detail"]
+            .as_str()
+            .expect("detail")
+            .contains("「残る」")
+    );
 }
 
 #[test]

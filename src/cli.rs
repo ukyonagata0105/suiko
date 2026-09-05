@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lint::{Finding, LintStats};
 use crate::morphology::Morphology;
-use crate::{Error, academic, lint, outline, read_source, terms};
+use crate::{Error, academic, lexical, lint, outline, read_source, terms};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -29,6 +29,8 @@ enum Command {
     Outline(FileArgs),
     /// 専門用語候補と初出時の説明手掛かりを抽出する
     Terms(TermsArgs),
+    /// 一般名詞複合語、表記・レジスターの揺れを読み取り専用で監査する
+    LexicalAudit(LexicalAuditArgs),
     /// 中心命題、論証順序、用語、引用、注、Word/PDF納品を監査契約に照らして検証する
     Academic(AcademicArgs),
 }
@@ -72,6 +74,19 @@ struct TermsArgs {
     /// 複数ファイルの用語を集計し、表記揺れを一覧化する（ファイルは書き換えない）
     #[arg(long)]
     audit: bool,
+}
+
+#[derive(Debug, Args)]
+struct LexicalAuditArgs {
+    /// 対象の Markdown/テキストファイル。複数指定可
+    #[arg(required = true)]
+    files: Vec<String>,
+    /// 固定コーパス頻度、登録語、レジスター集合を記したJSON参照資源
+    #[arg(long)]
+    reference: PathBuf,
+    /// 機械可読なJSONで出力する
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -365,6 +380,26 @@ fn print_terms_audit_human(report: &terms::TermsAuditReport) {
                 entry.file, entry.first_line, entry.count
             );
         }
+    }
+}
+
+fn print_lexical_audit_human(report: &lexical::LexicalAuditReport) {
+    println!("=== lexical audit: {}ファイル ===", report.files.len());
+    println!("参照資源: {}", report.reference_source);
+    println!(
+        "候補 {}件。Suikoは本文を書き換えません。\n",
+        report.findings.len()
+    );
+    for finding in &report.findings {
+        println!(
+            "[{}:{}] {} L{} {} — {}",
+            finding.severity,
+            finding.category,
+            finding.file,
+            finding.line,
+            finding.term,
+            finding.rationale
+        );
     }
 }
 
@@ -928,6 +963,23 @@ fn execute(cli: Cli) -> Result<ExitCode, Error> {
                     print_terms_human(file, &report);
                 }
             }
+        }
+        Command::LexicalAudit(args) => {
+            validate_inputs(&args.files)?;
+            let morphology = Morphology::new()?;
+            let reference =
+                serde_json::from_str::<lexical::LexicalReference>(&read_source(&args.reference)?)?;
+            let mut inputs = Vec::new();
+            for file in &args.files {
+                inputs.push((file.clone(), read_input(file)?));
+            }
+            let report = lexical::audit(&inputs, &morphology, &reference)?;
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print_lexical_audit_human(&report);
+            }
+            return Ok(ExitCode::SUCCESS);
         }
         Command::Academic(args) => {
             let source = read_source(&args.source)?;

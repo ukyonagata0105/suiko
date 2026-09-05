@@ -72,6 +72,7 @@ const FORBIDDEN_PHRASES: &[&str] = &[
     "一概には言えません",
     "個人差がありますが",
     "あくまで一例ですが",
+    "残る",
     "正面から扱う",
     "正面から見る",
     "正面から書く",
@@ -92,7 +93,6 @@ const FORBIDDEN_PHRASES: &[&str] = &[
 ];
 
 /// 語彙の実測(suiko-eval vocab)用の読み取り専用アクセサ。
-#[cfg(feature = "evaluation")]
 pub(crate) fn forbidden_phrase_list() -> &'static [&'static str] {
     FORBIDDEN_PHRASES
 }
