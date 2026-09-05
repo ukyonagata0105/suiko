@@ -26,6 +26,9 @@ pub struct AcademicContract {
     pub required_order: Vec<String>,
     pub terms: Vec<TermContract>,
     pub proper_nouns: Vec<String>,
+    /// 引用符付きで用いることを契約上確認済みの分類名、公式値、短いラベル。
+    #[serde(default)]
+    pub accepted_labels: Vec<String>,
     /// 同一著者を異なる文字体系で記す場合の正規化（例: 井庭 -> iba）。
     #[serde(default)]
     pub citation_aliases: BTreeMap<String, String>,
@@ -145,6 +148,17 @@ fn add_review(checks: &mut Vec<AcademicCheck>, id: &str, detail: impl Into<Strin
         status: "review".to_owned(),
         detail: detail.into(),
     });
+}
+
+fn has_coined_term_provenance(context: &str) -> bool {
+    context.contains("造語")
+        || ((context.contains("本稿")
+            || context.contains("本研究")
+            || context.contains("本研究プロジェクト"))
+            && (context.contains("と呼ぶ")
+                || context.contains("と定義")
+                || context.contains("分析用に定めた")
+                || context.contains("操作的分類")))
 }
 
 fn validate_contract(contract: &AcademicContract) -> Result<(), Error> {
@@ -301,7 +315,7 @@ fn plain_markdown(text: &str) -> String {
         .map(|line| link.replace_all(&line, "$1").into_owned())
         .map(|line| footnote.replace_all(&line, "").into_owned())
         .map(|line| html.replace_all(&line, "").into_owned())
-        .map(|line| line.replace(['*', '_', '`', '|'], " "))
+        .map(|line| line.replace(['*', '`', '|'], " "))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -316,7 +330,7 @@ fn citation_markdown(text: &str) -> String {
         .map(|line| image.replace_all(&line, "$1").into_owned())
         .map(|line| link.replace_all(&line, "$1").into_owned())
         .map(|line| footnote.replace_all(&line, "").into_owned())
-        .map(|line| line.replace(['*', '_', '`'], " "))
+        .map(|line| line.replace(['*', '`'], " "))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -594,7 +608,10 @@ fn section_bounds(outline: &[OutlineEntry], heading: &str) -> Option<(usize, usi
 fn academic_outline(view: &SourceView) -> Vec<OutlineEntry> {
     build_outline(&view.main_markdown)
         .into_iter()
-        .filter(|entry| !(entry.kind == "lead" && entry.text.starts_with("[^")))
+        .filter(|entry| {
+            !(entry.kind == "lead"
+                && (entry.text.starts_with("[^") || plain_markdown(&entry.text).trim().is_empty()))
+        })
         .collect()
 }
 
@@ -770,6 +787,36 @@ fn citation_keys(source: &str) -> BTreeSet<String> {
         .collect()
 }
 
+fn bracketed_citation_ids(source: &str) -> Vec<String> {
+    let bracket =
+        Regex::new(r"\\?\[([^\]\r\n]*@[^\]\r\n]+)\\?\]").expect("valid bracketed citation regex");
+    let citation =
+        Regex::new(r"@([A-Za-z0-9][A-Za-z0-9_.:/+\-]*)").expect("valid citation id regex");
+    let mut ids = Vec::new();
+    for group in bracket.captures_iter(source) {
+        ids.extend(
+            citation
+                .captures_iter(&group[1])
+                .map(|capture| capture[1].to_owned()),
+        );
+    }
+    ids
+}
+
+fn explicit_citation_ids(source: &str) -> BTreeSet<String> {
+    bracketed_citation_ids(source).into_iter().collect()
+}
+
+fn explicit_reference_ids(entries: &[String]) -> BTreeMap<String, usize> {
+    let mut ids = BTreeMap::new();
+    for entry in entries {
+        for id in bracketed_citation_ids(entry) {
+            *ids.entry(id).or_default() += 1;
+        }
+    }
+    ids
+}
+
 fn reference_keys(entry: &str) -> Vec<String> {
     let year = Regex::new(r"[（(]?([12][0-9]{3}[a-z]?)[）)]?").expect("valid reference year regex");
     let identifier = Regex::new(r"(?i)(?:\bdoi\s*:|\bhttps?://)").expect("valid DOI or URL regex");
@@ -821,15 +868,25 @@ fn audit_citations(
     view: &SourceView,
     aliases: &BTreeMap<String, String>,
 ) {
-    let cited = citation_keys(&view.citation_text);
+    let cited_ids = explicit_citation_ids(&view.citation_text);
+    let reference_ids = explicit_reference_ids(&view.references);
+    let explicit_id_mode = !cited_ids.is_empty() || !reference_ids.is_empty();
+
+    let cited = if explicit_id_mode {
+        BTreeSet::new()
+    } else {
+        citation_keys(&view.citation_text)
+    };
     let mut references = BTreeMap::<String, usize>::new();
-    for entry in &view.references {
-        for key in reference_keys(entry) {
-            *references.entry(key).or_default() += 1;
+    if !explicit_id_mode {
+        for entry in &view.references {
+            for key in reference_keys(entry) {
+                *references.entry(key).or_default() += 1;
+            }
         }
     }
     let referenced = references.keys().cloned().collect::<BTreeSet<_>>();
-    let missing = cited
+    let mut missing = cited
         .iter()
         .filter(|citation| {
             !referenced
@@ -838,7 +895,13 @@ fn audit_citations(
         })
         .cloned()
         .collect::<Vec<_>>();
-    let uncited = referenced
+    missing.extend(
+        cited_ids
+            .iter()
+            .filter(|citation| !reference_ids.contains_key(*citation))
+            .map(|citation| format!("@{citation}")),
+    );
+    let mut uncited = referenced
         .iter()
         .filter(|reference| {
             !cited
@@ -847,11 +910,23 @@ fn audit_citations(
         })
         .cloned()
         .collect::<Vec<_>>();
-    let duplicate = references
+    uncited.extend(
+        reference_ids
+            .keys()
+            .filter(|reference| !cited_ids.contains(*reference))
+            .map(|reference| format!("@{reference}")),
+    );
+    let mut duplicate = references
         .iter()
         .filter(|(_, count)| **count > 1)
         .map(|(key, _)| key.clone())
         .collect::<Vec<_>>();
+    duplicate.extend(
+        reference_ids
+            .iter()
+            .filter(|(_, count)| **count > 1)
+            .map(|(key, _)| format!("@{key}")),
+    );
     add_check(
         checks,
         "citation_reference_match",
@@ -1624,11 +1699,7 @@ pub fn audit(
                 return false;
             }
             match term.status.as_str() {
-                "coined" => {
-                    context.contains("造語")
-                        || (context.contains("本稿")
-                            && (context.contains("と呼ぶ") || context.contains("と定義")))
-                }
+                "coined" => has_coined_term_provenance(context),
                 "established" | "source-specific" => term
                     .source
                     .as_deref()
@@ -1650,6 +1721,7 @@ pub fn audit(
         .iter()
         .map(|item| item.term.as_str())
         .chain(contract.proper_nouns.iter().map(String::as_str))
+        .chain(contract.accepted_labels.iter().map(String::as_str))
         .collect::<BTreeSet<_>>();
     let quoted = Regex::new(r"[「《]([^」》]{2,24})[」》]").expect("valid label regex");
     let unregistered = quoted
@@ -1775,7 +1847,7 @@ pub fn audit(
         add_review(
             &mut checks,
             "delivery_readiness",
-            "原稿監査のみ完了。提出前にはWord DOCX、PDF、テンプレート、目視確認済み納品記録を指定します",
+            "原稿監査のみ完了。提出成果物は対象形式に対応する検証手順で別途確認します",
         );
     }
     audit_sync(&mut checks, &view, contract, paths)?;
@@ -1805,6 +1877,7 @@ pub fn audit(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs::File;
     use std::io::Write;
 
@@ -1813,8 +1886,9 @@ mod tests {
     use zip::write::SimpleFileOptions;
 
     use super::{
-        AcademicContract, ArtifactPaths, audit, audit_citations, audit_docx_layout, audit_notes,
-        audit_ooxml, audit_sync, file_sha256, source_view, style_observations,
+        AcademicContract, ArtifactPaths, academic_outline, audit, audit_citations,
+        audit_docx_layout, audit_notes, audit_ooxml, audit_sync, explicit_citation_ids,
+        file_sha256, has_coined_term_provenance, source_view, style_observations,
     };
 
     fn write_docx(path: &std::path::Path, text: &str, style: &str, extra: Option<(&str, &str)>) {
@@ -2676,6 +2750,76 @@ mod tests {
             broken_checks
                 .iter()
                 .any(|item| item.id == "docx_table_figure_placement" && item.status == "fail")
+        );
+    }
+
+    #[test]
+    fn coined_term_provenance_accepts_research_authorship_and_operational_definition() {
+        assert!(has_coined_term_provenance(
+            "算出した人口割合を本研究では公共交通人口カバー率と呼ぶ。"
+        ));
+        assert!(has_coined_term_provenance(
+            "七分類は、本研究プロジェクトが分析用に定めた操作的分類である。"
+        ));
+        assert!(!has_coined_term_provenance(
+            "公共交通人口カバー率を分析に用いる。"
+        ));
+    }
+
+    #[test]
+    fn academic_outline_ignores_html_only_wrapper_lines() {
+        let view = source_view(
+            "# 結果\n\n結果の本文。\n\n<div>\n\n</div>\n\n# 考察\n\n考察の本文。\n",
+            &[],
+        );
+        let outline = academic_outline(&view);
+        assert!(
+            outline
+                .iter()
+                .all(|entry| !matches!(entry.text.as_str(), "<div>" | "</div>")),
+            "{outline:#?}"
+        );
+    }
+
+    #[test]
+    fn citations_accept_explicit_markdown_ids() {
+        let view = source_view(
+            "本文で第一資料[@source-a]と第二資料[@source_b]を使う。\n\n# 参考文献\n\n- [@source-a] 第一資料。\n- [@source_b] 第二資料。\n",
+            &[],
+        );
+        let mut checks = Vec::new();
+        audit_citations(&mut checks, &view, &BTreeMap::new());
+        assert!(
+            checks.iter().all(|item| item.status == "pass"),
+            "{checks:#?}"
+        );
+        assert!(explicit_citation_ids("連絡先はwriter@example.jpである。").is_empty());
+    }
+
+    #[test]
+    fn accepted_labels_do_not_become_unregistered_label_reviews() {
+        let source = "# Introduction\n\nPolicy body has evidence. 「単独」\n";
+        let mut contract = contract();
+        contract.accepted_labels = vec!["単独".to_owned()];
+        let path = std::path::Path::new("paper.md");
+        let report = audit(
+            source,
+            &contract,
+            &ArtifactPaths {
+                source: path,
+                docx: None,
+                pdf: None,
+                template: None,
+                export_record: None,
+            },
+        )
+        .expect("academic audit");
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|item| item.id != "unregistered_label"),
+            "{report:#?}"
         );
     }
 }
