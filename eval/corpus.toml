@@ -703,3 +703,115 @@ path = "labeled/abstract_metaphor/silent-009.md"
 category = "abstract_metaphor"
 expect = "silent"
 note = "建材の用途を示す述語での本来の用例"
+
+[[sample]]
+id = "technical-jargon-metaphor-fire-001"
+path = "labeled/technical_jargon_metaphor/fire-001.md"
+category = "technical_jargon_metaphor"
+expect = "fire"
+genre = "tech"
+note = "テスト結果を緑で表す"
+
+[[sample]]
+id = "technical-jargon-metaphor-fire-002"
+path = "labeled/technical_jargon_metaphor/fire-002.md"
+category = "technical_jargon_metaphor"
+expect = "fire"
+genre = "tech"
+note = "検査結果を緑のままと表す"
+
+[[sample]]
+id = "technical-jargon-metaphor-fire-003"
+path = "labeled/technical_jargon_metaphor/fire-003.md"
+category = "technical_jargon_metaphor"
+expect = "fire"
+genre = "tech"
+note = "CIの成功状態を緑へ戻すと表す"
+
+[[sample]]
+id = "technical-jargon-metaphor-fire-004"
+path = "labeled/technical_jargon_metaphor/fire-004.md"
+category = "technical_jargon_metaphor"
+expect = "fire"
+genre = "tech"
+note = "既存テストの成功状態を緑で表す"
+
+[[sample]]
+id = "technical-jargon-metaphor-fire-005"
+path = "labeled/technical_jargon_metaphor/fire-005.md"
+category = "technical_jargon_metaphor"
+expect = "fire"
+genre = "tech"
+note = "コードの公開を出荷で表す"
+
+[[sample]]
+id = "technical-jargon-metaphor-fire-006"
+path = "labeled/technical_jargon_metaphor/fire-006.md"
+category = "technical_jargon_metaphor"
+expect = "fire"
+genre = "tech"
+note = "公開停止の判断を出荷停止で表し、決めるが出荷より前にある"
+
+[[sample]]
+id = "technical-jargon-metaphor-silent-001"
+path = "labeled/technical_jargon_metaphor/silent-001.md"
+category = "technical_jargon_metaphor"
+expect = "silent"
+genre = "tech"
+note = "テスト結果アイコンの実際の表示色"
+
+[[sample]]
+id = "technical-jargon-metaphor-silent-002"
+path = "labeled/technical_jargon_metaphor/silent-002.md"
+category = "technical_jargon_metaphor"
+expect = "silent"
+genre = "tech"
+note = "ダッシュボードの実際の表示色"
+
+[[sample]]
+id = "technical-jargon-metaphor-silent-003"
+path = "labeled/technical_jargon_metaphor/silent-003.md"
+category = "technical_jargon_metaphor"
+expect = "silent"
+genre = "tech"
+note = "工場から端末を物理的に出荷する"
+
+[[sample]]
+id = "technical-jargon-metaphor-silent-004"
+path = "labeled/technical_jargon_metaphor/silent-004.md"
+category = "technical_jargon_metaphor"
+expect = "silent"
+genre = "tech"
+note = "製品の物理的な出荷前検品"
+
+[[sample]]
+id = "technical-jargon-metaphor-silent-005"
+path = "labeled/technical_jargon_metaphor/silent-005.md"
+category = "technical_jargon_metaphor"
+expect = "silent"
+genre = "tech"
+note = "成功したテストを示す線の実際の表示色"
+
+[[sample]]
+id = "technical-jargon-metaphor-silent-006"
+path = "labeled/technical_jargon_metaphor/silent-006.md"
+category = "technical_jargon_metaphor"
+expect = "silent"
+genre = "tech"
+note = "バーコードをソフトウェアのコードと混同しない"
+
+[[sample]]
+id = "technical-jargon-metaphor-silent-007"
+path = "labeled/technical_jargon_metaphor/silent-007.md"
+category = "technical_jargon_metaphor"
+expect = "silent"
+genre = "tech"
+note = "別の節にある壁の実際の色とテストを結び付けない"
+
+[[sample]]
+id = "technical-jargon-metaphor-silent-008"
+path = "labeled/technical_jargon_metaphor/silent-008.md"
+category = "technical_jargon_metaphor"
+expect = "silent"
+genre = "tech"
+note = "物の状態を理由に出荷停止を決める物流の用例"

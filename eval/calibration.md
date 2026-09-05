@@ -268,3 +268,15 @@ default.
 
 See `eval/README.md` for the full command list covering `report`, `labeled`,
 all five sweep rules, and `length-analysis`.
+
+## Technical jargon metaphor candidates (2026-09-02)
+
+`technical_jargon_metaphor` is limited to `--genre tech --experimental` and
+reports review candidates at `info` severity. The labeled set covers six fire
+samples and eight silent samples: four test/CI color expressions, two software
+shipment expressions, four literal or unrelated color uses, and four physical
+shipment uses. The detector requires the relevant target and state words in
+one clause, and suppresses sentences containing display or physical-shipment
+context words. It does not provide automatic suggestions because the intended
+replacement depends on whether the text means pass, success, publish, release,
+or distribution.
